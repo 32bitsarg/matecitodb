@@ -39,14 +39,21 @@ async function migrate() {
       `)
       console.log('  ✓ _auth_users: email_verified, email_verified_at')
 
-      // ── 2. _permissions: agregar filter_rule ────────────────────────────────
+      // ── 2. _collections: agregar soft_delete ────────────────────────────────
+      await db.query(`
+        ALTER TABLE ${s}._collections
+          ADD COLUMN IF NOT EXISTS soft_delete BOOLEAN NOT NULL DEFAULT false
+      `)
+      console.log('  ✓ _collections: soft_delete')
+
+      // ── 3. _permissions: agregar filter_rule ────────────────────────────────
       await db.query(`
         ALTER TABLE ${s}._permissions
           ADD COLUMN IF NOT EXISTS filter_rule TEXT DEFAULT NULL
       `)
       console.log('  ✓ _permissions: filter_rule')
 
-      // ── 3. _records: agregar deleted_at ─────────────────────────────────────
+      // ── 4. _records: agregar deleted_at ─────────────────────────────────────
       await db.query(`
         ALTER TABLE ${s}._records
           ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP DEFAULT NULL
@@ -59,7 +66,7 @@ async function migrate() {
       `)
       console.log('  ✓ _records: deleted_at + índice')
 
-      // ── 4. _smtp_config: crear tabla si no existe ────────────────────────────
+      // ── 5. _smtp_config: crear tabla si no existe ────────────────────────────
       await db.query(`
         CREATE TABLE IF NOT EXISTS ${s}._smtp_config (
           id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
