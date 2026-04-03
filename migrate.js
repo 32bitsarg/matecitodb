@@ -8,6 +8,7 @@
  *   node migrate.js
  */
 
+require('dotenv').config()
 const { db } = require('./lib/matecito')
 
 async function migrate() {
