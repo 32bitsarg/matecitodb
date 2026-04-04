@@ -148,18 +148,38 @@ module.exports = async function (fastify) {
       await client.query("COMMIT");
 
       // ─── Auto-sync _collections si hubo DDL ──────────────────────────────
-      if (DDL_PATTERN.test(sql)) {
-        try {
-          await db.query(`
-            INSERT INTO ${quoteIdent(schemaName)}._collections (name)
-            SELECT tablename::text
-            FROM pg_catalog.pg_tables
-            WHERE schemaname = $1
-              AND tablename NOT LIKE '\_%'
-            ON CONFLICT (name) DO NOTHING
-          `, [schemaName]);
-        } catch (syncErr) { console.error('[SQL] auto-sync error:', syncErr.message); }
-      }
+      // Parseamos el nombre de tabla directamente del SQL para evitar depender
+      // de information_schema (no ve tablas de otros roles) o pg_catalog.
+      const createMatch = /\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?["']?(\w+)["']?/i.exec(sql);
+      const dropMatch   = /\bDROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?["']?(\w+)["']?/i.exec(sql);
+      const renameMatch = /\bALTER\s+TABLE\s+["']?(\w+)["']?\s+RENAME\s+TO\s+["']?(\w+)["']?/i.exec(sql);
+
+      try {
+        if (createMatch) {
+          const tbl = createMatch[1];
+          if (!tbl.startsWith('_')) {
+            await db.query(
+              `INSERT INTO ${quoteIdent(schemaName)}._collections (name) VALUES ($1) ON CONFLICT (name) DO NOTHING`,
+              [tbl]
+            );
+            console.log(`[SQL] auto-sync: INSERT collection "${tbl}"`);
+          }
+        } else if (dropMatch) {
+          const tbl = dropMatch[1];
+          await db.query(
+            `DELETE FROM ${quoteIdent(schemaName)}._collections WHERE name = $1`,
+            [tbl]
+          );
+          console.log(`[SQL] auto-sync: DELETE collection "${tbl}"`);
+        } else if (renameMatch) {
+          const [, oldName, newName] = renameMatch;
+          await db.query(
+            `UPDATE ${quoteIdent(schemaName)}._collections SET name = $1 WHERE name = $2`,
+            [newName, oldName]
+          );
+          console.log(`[SQL] auto-sync: RENAME collection "${oldName}" → "${newName}"`);
+        }
+      } catch (syncErr) { console.error('[SQL] auto-sync error:', syncErr.message); }
 
       const duration_ms = Date.now() - start;
 
