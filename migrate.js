@@ -83,6 +83,30 @@ async function migrate() {
       `)
       console.log('  ✓ _smtp_config: tabla creada')
 
+      // ── 6. Crear/actualizar rol PostgreSQL del proyecto ──────────────────────
+      // Necesario para el SQL editor (SET ROLE seguro).
+      // Si el rol ya existía con permisos incompletos (bug anterior), los re-aplica.
+      const sn = project.schema_name
+      await db.query(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${sn}') THEN
+            CREATE ROLE "${sn}" NOLOGIN;
+          END IF;
+        END $$
+      `)
+      await db.query(`GRANT USAGE ON SCHEMA "${sn}" TO "${sn}"`)
+      await db.query(`GRANT ALL ON ALL TABLES IN SCHEMA "${sn}" TO "${sn}"`)
+      await db.query(`GRANT ALL ON ALL SEQUENCES IN SCHEMA "${sn}" TO "${sn}"`)
+      await db.query(`ALTER DEFAULT PRIVILEGES IN SCHEMA "${sn}" GRANT ALL ON TABLES TO "${sn}"`)
+      await db.query(`ALTER DEFAULT PRIVILEGES IN SCHEMA "${sn}" GRANT ALL ON SEQUENCES TO "${sn}"`)
+      await db.query(`REVOKE ALL ON SCHEMA public FROM "${sn}"`)
+      // Asegura que matebase pueda hacer SET ROLE a este rol
+      await db.query(`GRANT "${sn}" TO matebase`).catch(() => {
+        // Ya existe el grant, ignorar
+      })
+      console.log(`  ✓ rol "${sn}": permisos aplicados`)
+
       console.log(`  ✅ ${project.name} — OK\n`)
     } catch (err) {
       console.error(`  ❌ ${project.name} — ERROR: ${err.message}\n`)
