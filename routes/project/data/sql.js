@@ -159,7 +159,7 @@ module.exports = async function (fastify) {
               AND table_type = 'BASE TABLE'
             ON CONFLICT (name) DO NOTHING
           `, [schemaName]);
-        } catch { /* no bloquear la respuesta si el sync falla */ }
+        } catch (syncErr) { console.error('[SQL] auto-sync error:', syncErr.message); }
       }
 
       const duration_ms = Date.now() - start;
