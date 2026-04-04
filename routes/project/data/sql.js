@@ -134,12 +134,16 @@ module.exports = async function (fastify) {
       //    Con esto postgres rechaza acceso a otros schemas a nivel de permisos,
       //    no solo por regex.
       if (hasRole) {
+        console.log(`[SQL] SET ROLE ${schemaName}`);
         await client.query(`SET ROLE ${quoteIdent(schemaName)}`);
+        console.log(`[SQL] SET ROLE OK`);
       }
 
+      console.log(`[SQL] BEGIN`);
       await client.query("BEGIN");
-
+      console.log(`[SQL] executing: ${sql.slice(0, 100)}`);
       const result = await client.query(sql);
+      console.log(`[SQL] OK rows=${result.rowCount}`);
 
       await client.query("COMMIT");
 
@@ -175,6 +179,7 @@ module.exports = async function (fastify) {
       };
 
     } catch (err) {
+      console.error(`[SQL] ERROR:`, err);
       await client.query("ROLLBACK").catch(() => {});
       return reply.code(400).send({ error: err.message });
     } finally {
