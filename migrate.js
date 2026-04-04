@@ -95,7 +95,7 @@ async function migrate() {
           END IF;
         END $$
       `)
-      await db.query(`GRANT USAGE ON SCHEMA "${sn}" TO "${sn}"`)
+      await db.query(`GRANT USAGE, CREATE ON SCHEMA "${sn}" TO "${sn}"`)
       await db.query(`GRANT ALL ON ALL TABLES IN SCHEMA "${sn}" TO "${sn}"`)
       await db.query(`GRANT ALL ON ALL SEQUENCES IN SCHEMA "${sn}" TO "${sn}"`)
       await db.query(`ALTER DEFAULT PRIVILEGES IN SCHEMA "${sn}" GRANT ALL ON TABLES TO "${sn}"`)
