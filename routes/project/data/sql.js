@@ -152,11 +152,10 @@ module.exports = async function (fastify) {
         try {
           await db.query(`
             INSERT INTO ${quoteIdent(schemaName)}._collections (name)
-            SELECT table_name::text
-            FROM information_schema.tables
-            WHERE table_schema = $1
-              AND table_name NOT LIKE '\_%'
-              AND table_type = 'BASE TABLE'
+            SELECT tablename::text
+            FROM pg_catalog.pg_tables
+            WHERE schemaname = $1
+              AND tablename NOT LIKE '\_%'
             ON CONFLICT (name) DO NOTHING
           `, [schemaName]);
         } catch (syncErr) { console.error('[SQL] auto-sync error:', syncErr.message); }
