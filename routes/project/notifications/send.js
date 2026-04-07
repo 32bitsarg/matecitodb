@@ -28,7 +28,8 @@ module.exports = async function (fastify) {
       if (!title || !body) {
         return reply.code(400).send({ error: "title and body are required" });
       }
-      if (user_ids.length > 1000) {
+      const isBroadcastCheck = user_ids.length === 1 && user_ids[0] === '*';
+      if (!isBroadcastCheck && user_ids.length > 1000) {
         return reply.code(400).send({ error: "Maximum 1000 user_ids per request" });
       }
 
@@ -51,12 +52,14 @@ module.exports = async function (fastify) {
         return reply.code(200).send({ successCount: 0, failureCount: 0, reason: "no_tokens_registered" });
       }
 
-      // Fetch tokens for the given user_ids
-      const placeholders = user_ids.map((_, i) => `$${i + 1}`).join(", ");
-      const tokensRes = await db.query(
-        `SELECT token FROM ${schema}._fcm_tokens WHERE user_id IN (${placeholders})`,
-        user_ids
-      );
+      // Fetch tokens — '*' means broadcast to all users
+      const isBroadcast = user_ids.length === 1 && user_ids[0] === '*';
+      const tokensRes = isBroadcast
+        ? await db.query(`SELECT token FROM ${schema}._fcm_tokens`)
+        : await db.query(
+            `SELECT token FROM ${schema}._fcm_tokens WHERE user_id IN (${user_ids.map((_, i) => `$${i + 1}`).join(", ")})`,
+            user_ids
+          );
 
       const tokens = tokensRes.rows.map((r) => r.token);
       if (tokens.length === 0) {
