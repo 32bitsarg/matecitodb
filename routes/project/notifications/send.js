@@ -42,6 +42,13 @@ module.exports = async function (fastify) {
 
       const schema = quoteIdent(schemaName);
 
+      // Load project-specific Firebase credentials
+      let projectCredentials = null;
+      try {
+        const cfgRes = await db.query(`SELECT credentials FROM ${schema}._fcm_config LIMIT 1`);
+        if (cfgRes.rows[0]) projectCredentials = cfgRes.rows[0].credentials;
+      } catch { /* tabla no existe → usar credenciales globales */ }
+
       // Check _fcm_tokens table exists
       const tableExists = await db.query(
         `SELECT 1 FROM information_schema.tables
@@ -66,7 +73,8 @@ module.exports = async function (fastify) {
         return reply.code(200).send({ successCount: 0, failureCount: 0, reason: "no_tokens_found" });
       }
 
-      const result = await sendToTokens(tokens, { title, body }, data ?? {});
+      const result = await sendToTokens(tokens, { title, body }, data ?? {}, projectCredentials);
+      fastify.log.info({ fcmResult: result }, "FCM send result");
 
       // Clean up invalid tokens
       if (result.invalidTokens.length > 0) {
