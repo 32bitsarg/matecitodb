@@ -87,6 +87,7 @@ module.exports = async function (fastify) {
       return reply.code(200).send({
         successCount: result.successCount,
         failureCount: result.failureCount,
+        errors:       result.errors ?? [],
       });
     } catch (err) {
       if (err.message?.includes("FCM not configured")) {

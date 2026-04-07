@@ -17,7 +17,7 @@ async function resolveSchema(req) {
 async function ensureTable(s) {
   await db.query(`
     CREATE TABLE IF NOT EXISTS ${s}._fcm_config (
-      id          SERIAL PRIMARY KEY,
+      id          INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
       project_id  TEXT NOT NULL,
       credentials JSONB NOT NULL,
       created_at  TIMESTAMPTZ DEFAULT NOW(),
