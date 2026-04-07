@@ -35,7 +35,7 @@ module.exports = async function (fastify) {
     const s = quoteIdent(schemaName);
 
     try {
-      const { rows } = await db.query(`SELECT project_id, updated_at FROM ${s}._fcm_config LIMIT 1`);
+      const { rows } = await db.query(`SELECT project_id, updated_at FROM ${s}._fcm_config ORDER BY updated_at DESC NULLS LAST LIMIT 1`);
       if (!rows[0]) return { configured: false };
       return { configured: true, project_id: rows[0].project_id, updated_at: rows[0].updated_at };
     } catch {
@@ -61,14 +61,12 @@ module.exports = async function (fastify) {
 
     await ensureTable(s);
 
-    await db.query(`
-      INSERT INTO ${s}._fcm_config (project_id, credentials)
-      VALUES ($1, $2)
-      ON CONFLICT (id) DO UPDATE SET
-        project_id  = EXCLUDED.project_id,
-        credentials = EXCLUDED.credentials,
-        updated_at  = NOW()
-    `, [credentials.project_id, credentials]);
+    // Delete + insert to avoid UPSERT issues with pre-existing table schemas
+    await db.query(`DELETE FROM ${s}._fcm_config`);
+    await db.query(
+      `INSERT INTO ${s}._fcm_config (project_id, credentials) VALUES ($1, $2)`,
+      [credentials.project_id, credentials]
+    );
 
     return { ok: true, project_id: credentials.project_id };
   });

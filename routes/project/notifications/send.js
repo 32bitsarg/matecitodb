@@ -45,7 +45,7 @@ module.exports = async function (fastify) {
       // Load project-specific Firebase credentials
       let projectCredentials = null;
       try {
-        const cfgRes = await db.query(`SELECT credentials FROM ${schema}._fcm_config LIMIT 1`);
+        const cfgRes = await db.query(`SELECT credentials FROM ${schema}._fcm_config ORDER BY updated_at DESC NULLS LAST LIMIT 1`);
         if (cfgRes.rows[0]) projectCredentials = cfgRes.rows[0].credentials;
       } catch { /* tabla no existe → usar credenciales globales */ }
 
