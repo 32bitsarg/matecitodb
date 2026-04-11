@@ -5,9 +5,9 @@
 // POST /email-templates/:name/preview   → preview sin enviar
 // POST /email-templates/:name/send-test → enviar test
 
-const { db, flexAuth, requireProjectOrPlatformAuth, quoteIdent, projectRoute } = require("../../../../lib/v2/auth");
-const { ensureV2Tables } = require("../../../../lib/v2/schema");
-const { apiError }       = require("../../../../lib/v2/errors");
+const { db, flexAuth, requireProjectOrPlatformAuth, quoteIdent, projectRoute } = require("../../../lib/v2/auth");
+const { ensureV2Tables } = require("../../../lib/v2/schema");
+const { apiError }       = require("../../../lib/v2/errors");
 
 function renderTemplate(str, vars) { return str.replace(/\{\{([^}]+)\}\}/g, (_, k) => vars[k.trim()] ?? ""); }
 

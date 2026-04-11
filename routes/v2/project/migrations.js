@@ -1,6 +1,6 @@
-const { db, flexAuth, requireProjectOrPlatformAuth, quoteIdent, projectRoute } = require("../../../../lib/v2/auth");
-const { ensureV2Tables } = require("../../../../lib/v2/schema");
-const { apiError }       = require("../../../../lib/v2/errors");
+const { db, flexAuth, requireProjectOrPlatformAuth, quoteIdent, projectRoute } = require("../../../lib/v2/auth");
+const { ensureV2Tables } = require("../../../lib/v2/schema");
+const { apiError }       = require("../../../lib/v2/errors");
 
 async function logMigration(schemaName, operation, collection, field, prevState, nextState, performedBy, ip) {
   const schema = quoteIdent(schemaName);

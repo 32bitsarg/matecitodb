@@ -10,8 +10,8 @@ const {
   flexAuth,
   quoteIdent,
   projectRoute,
-} = require("../../../../lib/v2/auth");
-const { ensureV2Tables } = require("../../../../lib/v2/schema");
+} = require("../../../lib/v2/auth");
+const { ensureV2Tables } = require("../../../lib/v2/schema");
 
 function escapeHtml(str) {
   return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
