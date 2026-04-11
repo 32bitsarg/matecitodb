@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -r \"fastify.register\" \"C:\\\\Programacion\\\\matebase\\\\api\" --include=\"*.js\" ! -path \"*/node_modules/*\")",
+      "Bash(grep -r \"TODO\\\\|FIXME\\\\|XXX\\\\|HACK\" \"C:\\\\Programacion\\\\matebase\\\\api\" --include=\"*.js\" ! -path \"*/node_modules/*\")",
+      "Bash(grep -r \"rateLimit\\\\|rate-limit\" \"C:\\\\Programacion\\\\matebase\\\\api\\\\routes\" --include=\"*.js\" ! -path \"*/node_modules/*\")",
+      "WebFetch(domain:insforge.dev)"
+    ]
+  }
+}

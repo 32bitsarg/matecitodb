@@ -1,21 +1,35 @@
 require("dotenv").config();
 
+const crypto = require("crypto");
+
+// ─── Validate required env vars ───────────────────────────────────────────────
+if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
+  throw new Error("JWT_SECRET env var is required and must be at least 32 characters");
+}
+
 const fastify = require("fastify")({
   logger: {
-    level: "info",
-    transport: {
+    level: process.env.LOG_LEVEL || "info",
+    transport: process.env.NODE_ENV !== "production" ? {
       target: "pino-pretty",
       options: {
         translateTime: "HH:MM:ss",
         ignore: "pid,hostname",
       },
-    },
+    } : undefined,
   },
   trustProxy: true,
+  genReqId: () => crypto.randomUUID(),
 });
 
-const { db } = require("./lib/matecito");
+const { db }                    = require("./lib/matecito");
 const { getProjectBySubdomain } = require("./lib/subdomain-cache");
+const { startRealtimeListener } = require("./lib/v2/realtime");
+const { setRedisClient }        = require("./lib/v2/permissions");
+const { runMigrations }         = require("./lib/v2/migrations");
+const { startScheduler }        = require("./lib/v2/scheduler");
+
+const START_TIME = Date.now();
 
 const DOMAIN = process.env.DOMAIN || "matecito.dev";
 const PLATFORM_HOST = process.env.PLATFORM_HOST || `api.${DOMAIN}`;
@@ -56,6 +70,70 @@ function rewritePublicPath(pathname) {
   // fallback
   return `/api/v1/project${pathname}`;
 }
+
+//
+// ─── SWAGGER ────────────────────────────────────────────────
+//
+
+fastify.register(require("@fastify/swagger"), {
+  openapi: {
+    info: {
+      title: "Matebase API",
+      description: "Backend-as-a-service API — v2",
+      version: "2.0.0",
+    },
+    components: {
+      securitySchemes: {
+        bearerAuth: { type: "http", scheme: "bearer", bearerFormat: "JWT" },
+        apiKey:     { type: "apiKey", in: "header", name: "x-matecito-key" },
+      },
+    },
+    security: [{ bearerAuth: [] }, { apiKey: [] }],
+  },
+});
+
+fastify.register(require("@fastify/swagger-ui"), {
+  routePrefix: "/docs",
+  uiConfig: { deepLinking: true },
+});
+
+//
+// ─── RATE LIMIT ─────────────────────────────────────────────
+//
+
+fastify.register(require("@fastify/rate-limit"), {
+  global:     false, // Only routes with config.rateLimit are limited
+  redis:      process.env.REDIS_URL ? (() => {
+    try { return require("./lib/v2/redis").redis; } catch { return null; }
+  })() : null,
+  keyGenerator: (req) => {
+    const projectId = req.resolvedProject?.id ?? req.params?.projectId;
+    // Try to extract userId from JWT without full verify (rate limit key only — auth still in preHandler)
+    const auth = req.headers.authorization;
+    if (auth?.startsWith("Bearer ")) {
+      try {
+        const payload = JSON.parse(Buffer.from(auth.split(".")[1], "base64url").toString());
+        if (payload?.sub && projectId) return `${projectId}:user:${payload.sub}`;
+      } catch { /* ignore — fall through to IP */ }
+    }
+    return projectId ? `${projectId}:${req.ip}` : req.ip;
+  },
+  errorResponseBuilder: (_req, context) => ({
+    error:       "Too many requests",
+    code:        "RATE_001",
+    retry_after: context.after,
+  }),
+});
+
+//
+// ─── CORRELATION ID ─────────────────────────────────────────
+//
+
+fastify.addHook("onRequest", async (req, reply) => {
+  const id = req.headers["x-request-id"] || req.id;
+  req.requestId = id;
+  reply.header("x-request-id", id);
+});
 
 //
 // ─── DEBUG LOG ──────────────────────────────────────────────
@@ -210,6 +288,47 @@ fastify.addHook("onRequest", async (req, reply) => {
 });
 
 //
+// ─── SDK HEADERS ────────────────────────────────────────────
+//
+
+const _storageCache = new Map(); // projectId → { used, quota, exp }
+
+fastify.addHook("onSend", async (req, reply) => {
+  reply.header("X-Matecito-Version", "2");
+
+  const projectId = req.resolvedProject?.id ?? req.params?.projectId;
+  if (!projectId) return;
+
+  try {
+    const now    = Date.now();
+    const cached = _storageCache.get(projectId);
+
+    let usedBytes, quotaMb;
+    if (cached && cached.exp > now) {
+      usedBytes = cached.used;
+      quotaMb   = cached.quota;
+    } else {
+      const { rows } = await db.query(
+        `SELECT COALESCE(SUM(f.size), 0)::bigint AS used, COALESCE(p.storage_quota_mb, 250) AS quota
+         FROM projects p LEFT JOIN files f ON f.project_id = p.id
+         WHERE p.id = $1 GROUP BY p.storage_quota_mb`,
+        [projectId]
+      );
+      if (rows[0]) {
+        usedBytes = Number(rows[0].used);
+        quotaMb   = Number(rows[0].quota);
+        _storageCache.set(projectId, { used: usedBytes, quota: quotaMb, exp: now + 60_000 });
+      }
+    }
+
+    if (usedBytes !== undefined) {
+      reply.header("X-Storage-Used-MB",  (usedBytes / 1024 / 1024).toFixed(2));
+      reply.header("X-Storage-Quota-MB", String(quotaMb));
+    }
+  } catch { /* non-critical */ }
+});
+
+//
 // ─── RESPONSE LOG ───────────────────────────────────────────
 //
 
@@ -228,22 +347,70 @@ fastify.addHook("onResponse", async (req, reply) => {
 
 fastify.get("/", async () => ({ status: "ok" }));
 
-fastify.get("/health", async () => {
-  await db.query("SELECT 1");
-  return { status: "up" };
+fastify.get("/health", async (req, reply) => {
+  const checks = {};
+
+  // DB
+  try {
+    await db.query("SELECT 1");
+    checks.db = {
+      status:   "up",
+      pool: {
+        total:   db.totalCount,
+        idle:    db.idleCount,
+        waiting: db.waitingCount,
+      },
+    };
+  } catch (err) {
+    checks.db = { status: "down", error: err.message };
+  }
+
+  // Redis (optional)
+  let redisStatus = "not_configured";
+  if (process.env.REDIS_URL) {
+    try {
+      const { redis } = require("./lib/v2/redis");
+      if (redis) {
+        await redis.ping();
+        redisStatus = "up";
+      }
+    } catch {
+      redisStatus = "down";
+    }
+  }
+  checks.redis = redisStatus;
+
+  const uptimeMs  = Date.now() - START_TIME;
+  const isHealthy = checks.db.status === "up";
+
+  return reply.code(isHealthy ? 200 : 503).send({
+    status:    isHealthy ? "up" : "degraded",
+    uptime_ms: uptimeMs,
+    version:   require("./package.json").version,
+    checks,
+  });
 });
-if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
-  throw new Error("JWT_SECRET env var is required and must be at least 32 characters");
-}
+
 fastify.register(require("@fastify/jwt"), {
   secret: process.env.JWT_SECRET,
 });
+
+// ─── v1 routes ────────────────────────────────────────────────────────────────
 fastify.register(require("./routes/platform"), {
   prefix: "/api/v1/platform",
 });
 
 fastify.register(require("./routes/project"), {
   prefix: "/api/v1/project",
+});
+
+// ─── v2 routes ────────────────────────────────────────────────────────────────
+fastify.register(require("./routes/v2/platform"), {
+  prefix: "/api/v2/platform",
+});
+
+fastify.register(require("./routes/v2/project"), {
+  prefix: "/api/v2/project",
 });
 
 //
@@ -267,10 +434,38 @@ fastify.setErrorHandler((error, req, reply) => {
 
 const start = async () => {
   try {
+    // ── Redis (optional — for distributed permission cache) ──────────────────
+    if (process.env.REDIS_URL) {
+      try {
+        const { redis } = require("./lib/v2/redis");
+        if (redis) {
+          setRedisClient(redis);
+          fastify.log.info("Redis connected — using distributed permission cache");
+        }
+      } catch (err) {
+        fastify.log.warn({ msg: "Redis init failed, using in-memory cache", error: err.message });
+      }
+    }
+
+    // ── Platform migrations ──────────────────────────────────────────────────
+    try {
+      await runMigrations();
+      fastify.log.info("Platform migrations up to date");
+    } catch (err) {
+      fastify.log.warn({ msg: "Platform migrations failed (non-fatal)", error: err.message });
+    }
+
+    // ── Background scheduler (cleanup jobs) ──────────────────────────────────
+    startScheduler();
+
+    // ── pg_notify realtime listener ──────────────────────────────────────────
+    startRealtimeListener().catch(err => {
+      fastify.log.warn({ msg: "Realtime listener failed to start", error: err.message });
+    });
+
     const port = Number(process.env.PORT || 3000);
     await fastify.listen({ port, host: "0.0.0.0" });
-fastify.log.info(fastify.printRoutes());
-    fastify.log.info(`🚀 Matecito API running on port ${port}`);
+    fastify.log.info(`Matecito API v2 running on port ${port}`);
   } catch (err) {
     fastify.log.error(err);
     process.exit(1);
