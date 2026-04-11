@@ -11,6 +11,7 @@ const {
   flexAuth,
   quoteIdent,
   projectRoute,
+  requireProjectOrPlatformAuth,
 } = require("../../../../lib/v2/auth");
 const { checkPermissionV2 } = require("../../../../lib/v2/permissions");
 const { ensureV2Tables } = require("../../../../lib/v2/schema");
