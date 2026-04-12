@@ -237,7 +237,7 @@ ${functionsText}
 - Sé conciso. Priorizá snippets de código sobre explicaciones largas.`;
 
     // Strip any system messages from client (security: prevent prompt injection)
-    const userMessages = messages.filter((m: any) => m.role !== "system");
+    const userMessages = messages.filter((m) => m.role !== "system");
 
     const body = {
       model: chatModel,
