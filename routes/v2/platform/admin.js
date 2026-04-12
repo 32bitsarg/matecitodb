@@ -1,10 +1,20 @@
 const { db, requireAdmin } = require("../../../lib/v2/auth");
 
+// Rate limit estricto: 30 req / 1 min por IP
+// Cualquiera que pruebe la URL choca con esto antes de llegar al 403
+const ADMIN_RATE_LIMIT = {
+  rateLimit: {
+    max: 30,
+    timeWindow: "1 minute",
+    errorResponseBuilder: () => ({ error: "Too many requests" }),
+  },
+};
+
 module.exports = async function (fastify) {
 
   // ── GET /admin/stats ──────────────────────────────────────────────────────
   // Stats generales de toda la plataforma
-  fastify.get("/admin/stats", { preHandler: requireAdmin }, async (req, reply) => {
+  fastify.get("/admin/stats", { ...ADMIN_RATE_LIMIT, preHandler: requireAdmin }, async (req, reply) => {
     const [
       usersRes,
       workspacesRes,
@@ -51,7 +61,7 @@ module.exports = async function (fastify) {
 
   // ── GET /admin/users ──────────────────────────────────────────────────────
   // Lista de usuarios con sus workspaces y proyectos
-  fastify.get("/admin/users", { preHandler: requireAdmin }, async (req, reply) => {
+  fastify.get("/admin/users", { ...ADMIN_RATE_LIMIT, preHandler: requireAdmin }, async (req, reply) => {
     const limit  = Math.min(parseInt(req.query.limit  || "50"), 100);
     const offset = parseInt(req.query.offset || "0");
     const search = req.query.search || "";
@@ -82,7 +92,7 @@ module.exports = async function (fastify) {
   });
 
   // ── GET /admin/projects ───────────────────────────────────────────────────
-  fastify.get("/admin/projects", { preHandler: requireAdmin }, async (req, reply) => {
+  fastify.get("/admin/projects", { ...ADMIN_RATE_LIMIT, preHandler: requireAdmin }, async (req, reply) => {
     const limit  = Math.min(parseInt(req.query.limit  || "50"), 100);
     const offset = parseInt(req.query.offset || "0");
 
@@ -104,7 +114,7 @@ module.exports = async function (fastify) {
   });
 
   // ── GET /admin/newsletter ─────────────────────────────────────────────────
-  fastify.get("/admin/newsletter", { preHandler: requireAdmin }, async (req, reply) => {
+  fastify.get("/admin/newsletter", { ...ADMIN_RATE_LIMIT, preHandler: requireAdmin }, async (req, reply) => {
     const { rows } = await db.query(`
       SELECT email, source, created_at
       FROM public.newsletter_subscribers
