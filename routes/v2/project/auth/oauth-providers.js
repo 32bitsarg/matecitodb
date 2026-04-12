@@ -8,6 +8,24 @@ const { apiError } = require("../../../../lib/v2/errors");
 
 const SUPPORTED = ["google", "github"];
 
+// Lazy-create _oauth_providers table (existing projects don't have it)
+const _oauthReady = new Set();
+async function ensureOAuthTable(schemaName) {
+  if (_oauthReady.has(schemaName)) return;
+  const s = quoteIdent(schemaName);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS ${s}._oauth_providers (
+      id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      provider      TEXT NOT NULL UNIQUE,
+      client_id     TEXT NOT NULL,
+      client_secret TEXT NOT NULL,
+      enabled       BOOLEAN DEFAULT TRUE,
+      created_at    TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+  _oauthReady.add(schemaName);
+}
+
 module.exports = async function (fastify) {
   // GET /auth/oauth-providers
   projectRoute(fastify, "GET", "/auth/oauth-providers", { preHandler: requireProjectOrPlatformAuth }, async (req, reply) => {
@@ -18,6 +36,7 @@ module.exports = async function (fastify) {
     )).rows[0]?.schema_name;
     if (!schemaName) return apiError(reply, "GEN_003", "Project not found");
 
+    await ensureOAuthTable(schemaName);
     const s = quoteIdent(schemaName);
     const { rows } = await db.query(
       `SELECT id, provider, client_id, enabled, created_at FROM ${s}._oauth_providers ORDER BY provider`
@@ -51,6 +70,7 @@ module.exports = async function (fastify) {
     )).rows[0]?.schema_name;
     if (!schemaName) return apiError(reply, "GEN_003", "Project not found");
 
+    await ensureOAuthTable(schemaName);
     const s = quoteIdent(schemaName);
     const { rows } = await db.query(
       `INSERT INTO ${s}._oauth_providers (provider, client_id, client_secret, enabled)
@@ -83,6 +103,7 @@ module.exports = async function (fastify) {
     )).rows[0]?.schema_name;
     if (!schemaName) return apiError(reply, "GEN_003", "Project not found");
 
+    await ensureOAuthTable(schemaName);
     const s = quoteIdent(schemaName);
     await db.query(`DELETE FROM ${s}._oauth_providers WHERE provider = $1`, [provider]);
     return { ok: true };
