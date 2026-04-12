@@ -247,7 +247,7 @@
 
 ---
 
-## Fase 3 — Features (17/19 implementadas)
+## Fase 3 — Features (19/19 implementadas ✅)
 
 ### Librerías nuevas `lib/v2/`
 
@@ -299,12 +299,15 @@
 | `_collection_aliases` | Q4 Aliases |
 | `_orgs`, `_org_members` | R1 Orgs |
 
-### Features restantes de Fase 3 (completadas)
+### Features adicionales de Fase 3
 
 | Feature | Archivo | Detalle |
 |---------|---------|---------|
-| **O1** Project branching | `routes/v2/platform/projects/branch.js` | Crear branch, diff, merge, delete |
+| **O1** Project branching | `routes/v2/platform/projects/branch.js` | Crear branch, diff, merge, delete — dev/staging/prod sin costo extra |
 | **R2** Bulk dry-run + atomic | `routes/v2/project/data/batch.js` | `?dry_run=true` valida sin escribir, `?atomic=true` rollback total |
+| **P1** Webhook retry + DLQ | `lib/v2/queue.js` + `webhooks.js` | Retry 6x backoff exponencial, dead letter queue, `GET /webhooks/dlq`, retry manual |
+| **P3** Data masking por rol | `lib/v2/data-masker.js` | Strategies: `partial`, `full`, `hash`, `redact`. Config por campo en `_fields` |
+| **R3** Query explain | `routes/v2/project/data/explain.js` | `POST /records/explain` — estimated_rows, uses_index, suggestions, solo service key |
 
 ### Migraciones de plataforma — Fase 3
 
@@ -331,7 +334,7 @@
 ## Paquetes a instalar en el VPS
 
 ```bash
-npm install ioredis @fastify/swagger @fastify/swagger-ui
+npm install ioredis @fastify/swagger @fastify/swagger-ui otpauth
 ```
 
 ---

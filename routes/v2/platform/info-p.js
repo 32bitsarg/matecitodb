@@ -13,7 +13,7 @@ module.exports = async function (fastify) {
 
     const [projectRes, keysRes] = await Promise.all([
       db.query(
-        `SELECT id, workspace_id, name, subdomain, schema_name, storage_quota_mb, log_retention_days, sql_enabled, allowed_origins, created_at
+        `SELECT id, workspace_id, name, subdomain, schema_name, api_version, storage_quota_mb, log_retention_days, sql_enabled, allowed_origins, created_at
          FROM projects WHERE id = $1 LIMIT 1`,
         [projectId]
       ),

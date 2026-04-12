@@ -23,7 +23,7 @@ module.exports = async function (fastify) {
       ),
       db.query(
         `SELECT
-           p.id, p.name, p.subdomain, p.schema_name, p.workspace_id, p.created_at,
+           p.id, p.name, p.subdomain, p.schema_name, p.workspace_id, p.api_version, p.created_at,
            w.name AS workspace_name,
            k_anon.key AS anon_key,
            k_srv.key  AS service_key

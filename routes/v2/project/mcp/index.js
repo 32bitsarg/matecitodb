@@ -15,6 +15,7 @@ const {
 const { ensureV2Tables } = require("../../../../lib/v2/schema");
 const { runFunction, createDbHelper } = require("../../../../lib/v2/function-runner");
 const { apiError } = require("../../../../lib/v2/errors");
+const { sendToTokens } = require("../../../../lib/fcm");
 
 const TOOLS = [
   {
@@ -89,9 +90,102 @@ const TOOLS = [
       },
     },
   },
+  {
+    name: "list_users",
+    description: "List authenticated users in the project",
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: { type: "number", default: 20 },
+        page:  { type: "number", default: 1 },
+      },
+    },
+  },
+  {
+    name: "send_notification",
+    description: "Send a push notification to one or more users",
+    inputSchema: {
+      type: "object",
+      required: ["user_ids", "title", "body"],
+      properties: {
+        user_ids: { type: "array", items: { type: "string" } },
+        title:    { type: "string" },
+        body:     { type: "string" },
+        data:     { type: "object" },
+      },
+    },
+  },
+  {
+    name: "invoke_function",
+    description: "Invoke a named server-side function with arguments",
+    inputSchema: {
+      type: "object",
+      required: ["name"],
+      properties: {
+        name: { type: "string" },
+        args: { type: "object" },
+      },
+    },
+  },
+  {
+    name: "track_event",
+    description: "Record an analytics event",
+    inputSchema: {
+      type: "object",
+      required: ["event"],
+      properties: {
+        event:      { type: "string" },
+        user_id:    { type: "string" },
+        session_id: { type: "string" },
+        properties: { type: "object" },
+      },
+    },
+  },
+  {
+    name: "get_storage_files",
+    description: "List files uploaded to storage",
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: { type: "number", default: 50 },
+      },
+    },
+  },
+  {
+    name: "list_forms",
+    description: "List all forms defined in the project",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "get_form_submissions",
+    description: "Get submissions for a specific form",
+    inputSchema: {
+      type: "object",
+      required: ["form_name"],
+      properties: {
+        form_name: { type: "string" },
+        limit:     { type: "number", default: 20 },
+      },
+    },
+  },
+  {
+    name: "get_project_config",
+    description: "Read remote config keys for the project",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "list_api_keys",
+    description: "List active API keys (key values are truncated for security)",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "get_project_stats",
+    description: "Get general project stats: record count, user count, file count and storage usage",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
 ];
 
-async function executeTool(name, args, schemaName) {
+async function executeTool(name, args, schemaName, projectId) {
   const schema = quoteIdent(schemaName);
 
   switch (name) {
@@ -179,6 +273,116 @@ async function executeTool(name, args, schemaName) {
       }
     }
 
+    case "list_users": {
+      const { limit = 20, page = 1 } = args;
+      const offset = (page - 1) * limit;
+      const { rows } = await db.query(
+        `SELECT id, email, username, name, email_verified, created_at
+         FROM ${schema}._auth_users ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
+        [limit, offset]
+      ).catch(() => ({ rows: [] }));
+      return { content: [{ type: "text", text: JSON.stringify({ users: rows, total: rows.length }, null, 2) }] };
+    }
+
+    case "send_notification": {
+      const { user_ids, title, body, data = {} } = args;
+      const tokensRes = await db.query(
+        `SELECT token FROM ${schema}._fcm_tokens WHERE user_id = ANY($1::text[])`,
+        [user_ids]
+      ).catch(() => ({ rows: [] }));
+      if (!tokensRes.rows.length) return { content: [{ type: "text", text: JSON.stringify({ sent: 0, reason: "no_tokens" }) }] };
+      const result = await sendToTokens(tokensRes.rows.map(r => r.token), { title, body }, data, null);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    }
+
+    case "invoke_function": {
+      const { rows: fnRows } = await db.query(
+        `SELECT * FROM ${schema}._functions WHERE name = $1 LIMIT 1`, [args.name]
+      );
+      if (!fnRows[0]) return { content: [{ type: "text", text: `Function '${args.name}' not found` }], isError: true };
+      const context = {
+        args: args.args || {},
+        user: null,
+        db: createDbHelper(db, quoteIdent, schemaName),
+        fetch: globalThis.fetch?.bind(globalThis),
+        env: {},
+      };
+      try {
+        const result = await runFunction({ code: fnRows[0].code, timeoutMs: fnRows[0].timeout_ms || 5000, context });
+        return { content: [{ type: "text", text: JSON.stringify(result.result, null, 2) }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: `Error: ${err.message}` }], isError: true };
+      }
+    }
+
+    case "track_event": {
+      await ensureV2Tables(schemaName);
+      await db.query(
+        `INSERT INTO ${schema}._analytics_events (event, user_id, session_id, properties)
+         VALUES ($1, $2, $3, $4)`,
+        [args.event, args.user_id || null, args.session_id || null, JSON.stringify(args.properties || {})]
+      );
+      return { content: [{ type: "text", text: JSON.stringify({ tracked: true }) }] };
+    }
+
+    case "get_storage_files": {
+      const { rows } = await db.query(
+        `SELECT id, url, mime, size, created_at FROM files WHERE project_id = $1 ORDER BY created_at DESC LIMIT $2`,
+        [projectId, args.limit || 50]
+      ).catch(() => ({ rows: [] }));
+      return { content: [{ type: "text", text: JSON.stringify({ files: rows }, null, 2) }] };
+    }
+
+    case "list_forms": {
+      const { rows } = await db.query(
+        `SELECT name, collection, created_at FROM ${schema}._forms ORDER BY created_at DESC`
+      ).catch(() => ({ rows: [] }));
+      return { content: [{ type: "text", text: JSON.stringify({ forms: rows }, null, 2) }] };
+    }
+
+    case "get_form_submissions": {
+      const { form_name, limit = 20 } = args;
+      const { rows: formRows } = await db.query(
+        `SELECT collection FROM ${schema}._forms WHERE name = $1 LIMIT 1`, [form_name]
+      ).catch(() => ({ rows: [] }));
+      if (!formRows[0]) return { content: [{ type: "text", text: `Form '${form_name}' not found` }], isError: true };
+      const { rows } = await db.query(
+        `SELECT id, data, created_at FROM ${schema}._records WHERE collection = $1 ORDER BY created_at DESC LIMIT $2`,
+        [formRows[0].collection, limit]
+      );
+      return { content: [{ type: "text", text: JSON.stringify({ form: form_name, submissions: rows }, null, 2) }] };
+    }
+
+    case "get_project_config": {
+      const { rows } = await db.query(
+        `SELECT key, value, is_public FROM ${schema}._config ORDER BY key`
+      ).catch(() => ({ rows: [] }));
+      return { content: [{ type: "text", text: JSON.stringify({ config: rows }, null, 2) }] };
+    }
+
+    case "list_api_keys": {
+      const { rows } = await db.query(
+        `SELECT id, LEFT(key, 20) || '...' AS key_preview, type, scopes, created_at
+         FROM api_keys WHERE project_id = $1 AND revoked_at IS NULL ORDER BY created_at DESC`,
+        [projectId]
+      ).catch(() => ({ rows: [] }));
+      return { content: [{ type: "text", text: JSON.stringify({ keys: rows }, null, 2) }] };
+    }
+
+    case "get_project_stats": {
+      const [recRes, usrRes, fileRes] = await Promise.all([
+        db.query(`SELECT COUNT(*) AS records FROM ${schema}._records WHERE deleted_at IS NULL`).catch(() => ({ rows: [{ records: 0 }] })),
+        db.query(`SELECT COUNT(*) AS users FROM ${schema}._auth_users`).catch(() => ({ rows: [{ users: 0 }] })),
+        db.query(`SELECT COUNT(*) AS files, COALESCE(SUM(size), 0) AS storage_bytes FROM files WHERE project_id = $1`, [projectId]).catch(() => ({ rows: [{ files: 0, storage_bytes: 0 }] })),
+      ]);
+      return { content: [{ type: "text", text: JSON.stringify({
+        records:    parseInt(recRes.rows[0].records),
+        users:      parseInt(usrRes.rows[0].users),
+        files:      parseInt(fileRes.rows[0].files),
+        storage_mb: Math.round(fileRes.rows[0].storage_bytes / 1024 / 1024),
+      }, null, 2) }] };
+    }
+
     default:
       return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
   }
@@ -237,7 +441,7 @@ module.exports = async function (fastify) {
       if (msg.method === "tools/call") {
         const { name, arguments: toolArgs } = msg.params || {};
         try {
-          const result = await executeTool(name, toolArgs, schemaName);
+          const result = await executeTool(name, toolArgs, schemaName, projectId);
           connection.socket.send(JSON.stringify({
             jsonrpc: "2.0",
             id: msg.id,

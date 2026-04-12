@@ -45,8 +45,9 @@ module.exports = async function (fastify) {
         required: ["workspaceId", "name"],
         additionalProperties: false,
         properties: {
-          workspaceId: { type: "string" },
-          name:        { type: "string", minLength: 1, maxLength: 64 },
+          workspaceId:  { type: "string" },
+          name:         { type: "string", minLength: 1, maxLength: 64 },
+          api_version:  { type: "string", enum: ["v1", "v2"] },
         },
       },
     },
@@ -54,6 +55,8 @@ module.exports = async function (fastify) {
     const userId      = req.user.id;
     const workspaceId = String(req.body.workspaceId || "").trim();
     const name        = String(req.body.name        || "").trim();
+    // El endpoint v2 crea proyectos v2 por defecto, pero permite v1 para compatibilidad
+    const apiVersion  = req.body.api_version === 'v1' ? 'v1' : 'v2';
 
     const membership = await isWorkspaceMember(userId, workspaceId);
     if (!membership) return apiError(reply, "PERM_001");
@@ -67,10 +70,10 @@ module.exports = async function (fastify) {
       const subdomain     = await resolveUniqueSubdomain(client, baseSubdomain);
 
       const projectRes = await client.query(
-        `INSERT INTO projects (workspace_id, name, subdomain, storage_quota_mb, log_retention_days, sql_enabled)
-         VALUES ($1, $2, $3, 250, 30, false)
-         RETURNING id, workspace_id, name, subdomain, storage_quota_mb, log_retention_days, sql_enabled, created_at`,
-        [workspaceId, name, subdomain]
+        `INSERT INTO projects (workspace_id, name, subdomain, api_version, storage_quota_mb, log_retention_days, sql_enabled)
+         VALUES ($1, $2, $3, $4, 250, 30, false)
+         RETURNING id, workspace_id, name, subdomain, api_version, storage_quota_mb, log_retention_days, sql_enabled, created_at`,
+        [workspaceId, name, subdomain, apiVersion]
       );
 
       const project    = projectRes.rows[0];
@@ -79,8 +82,10 @@ module.exports = async function (fastify) {
       await client.query(`UPDATE projects SET schema_name = $1 WHERE id = $2`, [schemaName, project.id]);
       await createProjectSchema(client, schemaName);
 
-      // Inicializar tablas v2 en el nuevo schema
-      await ensureV2Tables(schemaName).catch(() => {});
+      // Inicializar tablas v2 cuando el proyecto lo requiere
+      if (apiVersion === 'v2') {
+        await ensureV2Tables(schemaName).catch(() => {});
+      }
 
       const anonKey    = `anon_${generateToken(24)}`;
       const serviceKey = `srv_${generateToken(32)}`;

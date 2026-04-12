@@ -2,8 +2,8 @@
 ### Features que nos diferencian de Supabase, Firebase e InsForge
 
 > Todo bajo `/api/v2/`. Sin tocar v1.  
-> Fase 2: **14/14 features implementadas**.  
-> Este documento cubre la Fase 3 — diferenciación real.
+> Fase 2: **14/14 features implementadas ✅**  
+> Fase 3: **19/19 features implementadas ✅**
 
 ---
 
@@ -37,7 +37,9 @@
 
 ## SDK v4.0
 
-El SDK `matecitodb` fue actualizado a **v4.0.0** con soporte completo para v2:
+Los SDKs `matecitodb` (TypeScript) y `matecitodb_flutter` (Dart/Flutter) fueron actualizados a **v4.0.0** con soporte completo para v2:
+
+### TypeScript SDK (`matecitodb`)
 
 ```ts
 // v1 (default, sin cambios — compatibilidad total)
@@ -66,6 +68,38 @@ db.batch().insert('posts', data).atomic().execute()
 db.from('posts').searchFullText('hello world')
 db.from('posts').between('price', 10, 100).isNull('deleted_at').get()
 ```
+
+### Flutter SDK (`matecitodb_flutter`)
+
+```dart
+// v1 (default, sin cambios — compatibilidad total)
+final db = MatecitoDB('https://...', config: ClientConfig(apiKey: 'mk_...'));
+
+// v2 (nuevas features)
+final db = MatecitoDB('https://...', config: ClientConfig(apiKey: 'mk_...', apiVersion: 'v2'));
+
+// Nuevos módulos v2
+db.functions.list();
+db.functions.invoke('my-fn', args: {'arg': 1});
+db.remoteConfig.getAll();
+db.analytics.track('page_view');
+db.ai.chat([ChatMessage(role: 'user', content: 'Hello')]);
+db.geo.near('places', -34.6, -58.4, radiusKm: 5);
+db.workflows.getState('orders', 'record-id');
+db.orgs.myOrgs();
+db.sync.pull('tasks', lastSyncTime);
+db.forms.list();
+db.auth.magicLink('user@example.com');
+db.auth.totpSetup();
+db.auth.roles.list();
+db.auth.invitations.create(email: 'new@user.com', role: 'editor');
+db.notifications.listMy();
+db.batch().insert('posts', data).atomic().execute();
+db.from('posts').searchFullText('hello world');
+db.from('posts').between('price', 10, 100).isNull('deleted_at').get();
+```
+
+**Sin breaking changes** — los usuarios existentes no necesitan cambiar nada. El SDK usa v1 por default.
 
 ---
 

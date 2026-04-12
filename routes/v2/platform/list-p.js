@@ -21,7 +21,7 @@ module.exports = async function (fastify) {
     if (!membership) return apiError(reply, "PERM_001");
 
     const { rows } = await db.query(
-      `SELECT id, workspace_id, name, subdomain, schema_name, created_at
+      `SELECT id, workspace_id, name, subdomain, schema_name, api_version, created_at
        FROM projects WHERE workspace_id = $1 ORDER BY created_at DESC`,
       [workspaceId]
     );

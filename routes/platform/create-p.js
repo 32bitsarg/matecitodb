@@ -48,9 +48,10 @@ async function resolveUniqueSubdomain(client, base) {
 
 module.exports = async function (fastify) {
   fastify.post("/create-p", { preHandler: requirePlatformAuth }, async (req, reply) => {
-    const userId     = req.user.id;
+    const userId      = req.user.id;
     const workspaceId = String(req.body?.workspaceId || "").trim();
     const name        = String(req.body?.name        || "").trim();
+    const apiVersion  = req.body?.api_version === 'v2' ? 'v2' : 'v1';
 
     if (!workspaceId || !name) {
       return reply.code(400).send({ error: "workspaceId and name are required" });
@@ -75,10 +76,10 @@ module.exports = async function (fastify) {
 
       // 2. Crear el proyecto (con subdomain y configuración por defecto)
       const projectRes = await client.query(
-        `INSERT INTO projects (workspace_id, name, subdomain, storage_quota_mb, log_retention_days, sql_enabled)
-         VALUES ($1, $2, $3, 250, 30, false)
-         RETURNING id, workspace_id, name, subdomain, storage_quota_mb, log_retention_days, sql_enabled, created_at`,
-        [workspaceId, name, subdomain]
+        `INSERT INTO projects (workspace_id, name, subdomain, api_version, storage_quota_mb, log_retention_days, sql_enabled)
+         VALUES ($1, $2, $3, $4, 250, 30, false)
+         RETURNING id, workspace_id, name, subdomain, api_version, storage_quota_mb, log_retention_days, sql_enabled, created_at`,
+        [workspaceId, name, subdomain, apiVersion]
       );
 
       const project    = projectRes.rows[0];
@@ -111,8 +112,8 @@ module.exports = async function (fastify) {
       return reply.code(201).send({
         project: {
           ...project,
-          schema_name: schemaName,
-          url: `https://${subdomain}.${DOMAIN}`,
+          schema_name:  schemaName,
+          url:          `https://${subdomain}.${DOMAIN}`,
         },
         api_keys: {
           anon:    anonKey,

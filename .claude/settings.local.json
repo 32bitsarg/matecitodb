@@ -5,7 +5,11 @@
       "Bash(grep -r \"TODO\\\\|FIXME\\\\|XXX\\\\|HACK\" \"C:\\\\Programacion\\\\matebase\\\\api\" --include=\"*.js\" ! -path \"*/node_modules/*\")",
       "Bash(grep -r \"rateLimit\\\\|rate-limit\" \"C:\\\\Programacion\\\\matebase\\\\api\\\\routes\" --include=\"*.js\" ! -path \"*/node_modules/*\")",
       "WebFetch(domain:insforge.dev)",
-      "Bash(node:*)"
+      "Bash(node:*)",
+      "Bash(npx tsc:*)",
+      "Bash(node_modules/.bin/tsc -p tsconfig.esm.json --noEmit)",
+      "Bash(cmd:*)",
+      "Bash(claude plugin:*)"
     ]
   }
 }
