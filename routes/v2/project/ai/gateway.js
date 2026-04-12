@@ -19,7 +19,10 @@ const { ensureV2Tables } = require("../../../../lib/v2/schema");
 const { apiError }       = require("../../../../lib/v2/errors");
 const crypto             = require("crypto");
 
-const APP_SECRET = process.env.JWT_SECRET || "fallback-secret-do-not-use-in-prod";
+const APP_SECRET         = process.env.JWT_SECRET         || "fallback-secret-do-not-use-in-prod";
+const PLATFORM_GROQ_KEY  = process.env.PLATFORM_GROQ_KEY  || null;
+const PLATFORM_FREE_MODEL = "llama-3.1-8b-instant";   // fastest/cheapest on Groq free tier
+const PLATFORM_FREE_LIMIT = 50;                        // req/day per project on platform key
 
 function encryptValue(value) {
   const key = crypto.scryptSync(APP_SECRET, "ai-config-salt", 32);
@@ -41,18 +44,20 @@ function decryptValue(encrypted) {
   return decrypted;
 }
 
-const SUPPORTED_PROVIDERS = ["openai", "anthropic", "groq"];
+const SUPPORTED_PROVIDERS = ["openai", "anthropic", "groq", "gemini"];
 
 const DEFAULT_MODELS = {
-  openai:   { chat: "gpt-4o-mini", embed: "text-embedding-3-small" },
+  openai:    { chat: "gpt-4o-mini",              embed: "text-embedding-3-small" },
   anthropic: { chat: "claude-3-haiku-20240307" },
-  groq:     { chat: "llama-3.1-70b-versatile" },
+  groq:      { chat: "llama-3.3-70b-versatile" },
+  gemini:    { chat: "gemini-1.5-flash",         embed: "text-embedding-004" },
 };
 
 const AI_API_URLS = {
-  openai:   "https://api.openai.com/v1",
+  openai:    "https://api.openai.com/v1",
   anthropic: "https://api.anthropic.com/v1",
-  groq:     "https://api.groq.com/openai/v1",
+  groq:      "https://api.groq.com/openai/v1",
+  gemini:    "https://generativelanguage.googleapis.com/v1beta/openai",
 };
 
 async function getAIConfig(schemaName) {
@@ -72,6 +77,45 @@ async function getDecryptedApiKey(schemaName) {
   const config = await getAIConfig(schemaName);
   if (!config || !config.api_key_encrypted) return null;
   return decryptValue(config.api_key_encrypted);
+}
+
+// Returns { apiKey, provider, model, isPlatform }
+// Falls back to platform Groq key if project has no config.
+async function resolveAICredentials(schemaName, overrideModel) {
+  const config = await getAIConfig(schemaName);
+  const hasOwnKey = config?.api_key_encrypted;
+
+  if (hasOwnKey) {
+    const provider = config.provider.toLowerCase();
+    return {
+      apiKey:     decryptValue(config.api_key_encrypted),
+      provider,
+      model:      overrideModel || config.model || DEFAULT_MODELS[provider]?.chat,
+      isPlatform: false,
+    };
+  }
+
+  // No project key — use platform free tier (Groq) if available
+  if (PLATFORM_GROQ_KEY) {
+    return {
+      apiKey:     PLATFORM_GROQ_KEY,
+      provider:   "groq",
+      model:      PLATFORM_FREE_MODEL,
+      isPlatform: true,
+    };
+  }
+
+  return null;
+}
+
+async function checkPlatformRateLimit(schemaName) {
+  // Count today's platform-key requests for this project
+  const schema = quoteIdent(schemaName);
+  const { rows } = await db.query(
+    `SELECT COUNT(*) AS cnt FROM ${schema}._ai_usage
+     WHERE endpoint = '/ai/chat:platform' AND created_at >= CURRENT_DATE`
+  ).catch(() => ({ rows: [{ cnt: 0 }] }));
+  return parseInt(rows[0].cnt) < PLATFORM_FREE_LIMIT;
 }
 
 async function logUsage(schemaName, model, promptTokens, completionTokens, userId, endpoint) {
@@ -115,27 +159,89 @@ module.exports = async function (fastify) {
     if (!schemaName) return apiError(reply, "GEN_003", "Project not found");
     await ensureV2Tables(schemaName);
 
-    const config = await getAIConfig(schemaName);
-    if (!config || !config.provider) {
-      return reply.code(400).send({ error: "AI not configured. Set ai-config first.", code: "GEN_002" });
+    const creds = await resolveAICredentials(schemaName, model);
+    if (!creds) {
+      return reply.code(400).send({
+        error: "AI not configured. Add your API key in the AI Gateway settings, or contact the platform admin.",
+        code: "GEN_002",
+      });
     }
 
-    const apiKey = await getDecryptedApiKey(schemaName);
-    if (!apiKey) {
-      return reply.code(400).send({ error: "AI API key not configured", code: "GEN_002" });
+    if (creds.isPlatform) {
+      const allowed = await checkPlatformRateLimit(schemaName);
+      if (!allowed) {
+        return reply.code(429).send({
+          error: `Free tier limit reached (${PLATFORM_FREE_LIMIT} req/day). Configure your own API key for unlimited usage.`,
+          code: "RATE_LIMIT",
+          hint: "Dashboard → AI Gateway → Config",
+        });
+      }
     }
 
-    const provider = config.provider.toLowerCase();
-    const baseUrl = AI_API_URLS[provider];
-    const chatModel = model || config.model || DEFAULT_MODELS[provider]?.chat || "gpt-4o-mini";
+    const { apiKey, provider } = creds;
+    const baseUrl   = AI_API_URLS[provider];
+    const chatModel = creds.model;
+    const endpoint  = creds.isPlatform ? "/ai/chat:platform" : "/ai/chat";
 
-    if (!baseUrl) {
-      return reply.code(400).send({ error: `Unsupported provider: ${provider}`, code: "GEN_002" });
-    }
+    // ── Build system prompt with project context ───────────────────────────
+    const schema = quoteIdent(schemaName);
+    const [projRes, colRes, fieldRes, fnRes] = await Promise.all([
+      db.query(`SELECT name, subdomain FROM projects WHERE id = $1 LIMIT 1`, [projectId]),
+      db.query(`SELECT name FROM ${schema}._collections ORDER BY name`).catch(() => ({ rows: [] })),
+      db.query(`SELECT collection, name, type, required FROM ${schema}._fields ORDER BY collection, name`).catch(() => ({ rows: [] })),
+      db.query(`SELECT name FROM ${schema}._functions ORDER BY name`).catch(() => ({ rows: [] })),
+    ]);
+
+    const proj       = projRes.rows[0] ?? {};
+    const projectUrl = proj.subdomain ? `https://${proj.subdomain}.matecito.dev` : "";
+
+    const collectionsText = colRes.rows.length
+      ? colRes.rows.map(c => {
+          const fields = fieldRes.rows.filter(f => f.collection === c.name);
+          const fStr   = fields.length
+            ? fields.map(f => `    - ${f.name} (${f.type}${f.required ? ", required" : ""})`).join("\n")
+            : "    - (sin fields definidos)";
+          return `  - ${c.name}\n${fStr}`;
+        }).join("\n")
+      : "  (sin colecciones creadas aún)";
+
+    const functionsText = fnRes.rows.length
+      ? fnRes.rows.map(f => `  - ${f.name}`).join("\n")
+      : "  (sin functions)";
+
+    const systemPrompt = `Sos el asistente de desarrollo del proyecto "${proj.name ?? "Matecito"}" en Matecito BaaS.
+
+## Tu rol
+Ayudás al developer a:
+- Usar el SDK matecitodb (JS/TS) y matecitodb_flutter (Flutter/Dart)
+- Entender y operar las colecciones y datos de ESTE proyecto
+- Escribir server functions, queries, reglas de permisos
+- Integrar features: auth, storage, realtime, notificaciones, AI, forms, analytics, geo, sync
+
+## Contexto de ESTE proyecto
+- Nombre: ${proj.name ?? "-"}
+- Base URL: ${projectUrl}
+- SDK init: \`createClient('${projectUrl}', { apiKey: 'YOUR_ANON_KEY', apiVersion: 'v2' })\`
+
+## Colecciones y schema
+${collectionsText}
+
+## Server Functions
+${functionsText}
+
+## Reglas
+- SOLO hablás de este proyecto. Nunca mencionés ni inferís datos de otros proyectos.
+- Si te preguntan por datos de otro proyecto: respondé "Solo tengo acceso al contexto de este proyecto."
+- No ejecutás código real ni accedés a la DB directamente — solo generás código y explicaciones.
+- Respondé en español salvo que el dev escriba en otro idioma.
+- Sé conciso. Priorizá snippets de código sobre explicaciones largas.`;
+
+    // Strip any system messages from client (security: prevent prompt injection)
+    const userMessages = messages.filter((m: any) => m.role !== "system");
 
     const body = {
       model: chatModel,
-      messages,
+      messages: [{ role: "system", content: systemPrompt }, ...userMessages],
       stream: stream || false,
     };
     if (max_tokens !== undefined) body.max_tokens = max_tokens;
@@ -183,7 +289,7 @@ module.exports = async function (fastify) {
         reply.raw.write("data: [DONE]\n\n");
         reply.raw.end();
 
-        await logUsage(schemaName, chatModel, promptTokens, completionTokens, req.projectUser?.id, "/ai/chat");
+        await logUsage(schemaName, chatModel, promptTokens, completionTokens, req.projectUser?.id, endpoint);
       } catch (err) {
         reply.raw.write(`data: {"error":"${err.message}"}\n\n`);
         reply.raw.end();
@@ -207,13 +313,24 @@ module.exports = async function (fastify) {
       }
 
       const usage = data.usage || {};
-      await logUsage(schemaName, chatModel, usage.prompt_tokens || 0, usage.completion_tokens || 0, req.projectUser?.id, "/ai/chat");
+      await logUsage(schemaName, chatModel, usage.prompt_tokens || 0, usage.completion_tokens || 0, req.projectUser?.id, endpoint);
+
+      // Count remaining free-tier requests for this project today
+      let remainingToday = null;
+      if (creds.isPlatform) {
+        const { rows: usageRows } = await db.query(
+          `SELECT COUNT(*) AS cnt FROM ${quoteIdent(schemaName)}._ai_usage
+           WHERE endpoint = '/ai/chat:platform' AND created_at >= CURRENT_DATE`
+        ).catch(() => ({ rows: [{ cnt: 0 }] }));
+        remainingToday = Math.max(0, PLATFORM_FREE_LIMIT - parseInt(usageRows[0].cnt));
+      }
 
       return {
         id: data.id,
         model: data.model,
         choices: data.choices,
         usage: data.usage,
+        ...(creds.isPlatform ? { platform_free: true, remaining_today: remainingToday } : {}),
       };
     } catch (err) {
       return reply.code(502).send({ error: `AI gateway error: ${err.message}`, code: "GEN_005" });
@@ -356,14 +473,17 @@ module.exports = async function (fastify) {
     };
 
     await db.query(
-      `INSERT INTO ${schema}._project_settings (id, ai_config)
-       VALUES ((SELECT id FROM ${schema}._project_settings LIMIT 1), $1)
-       ON CONFLICT (id) DO UPDATE SET ai_config = $1`,
+      `INSERT INTO ${schema}._project_settings (ai_config)
+       VALUES ($1)
+       ON CONFLICT (id) DO UPDATE SET ai_config = EXCLUDED.ai_config`,
       [JSON.stringify(config)]
     ).catch(async () => {
-      // If _project_settings doesn't exist, store in a simpler way
+      // _project_settings may not exist yet — run ensureV2Tables and retry once
+      await ensureV2Tables(schemaName).catch(() => {});
       await db.query(
-        `SELECT set_config('matebase.ai_config', $1, false)`,
+        `INSERT INTO ${schema}._project_settings (ai_config)
+         VALUES ($1)
+         ON CONFLICT (id) DO UPDATE SET ai_config = EXCLUDED.ai_config`,
         [JSON.stringify(config)]
       ).catch(() => {});
     });
