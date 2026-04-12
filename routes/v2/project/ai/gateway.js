@@ -141,11 +141,12 @@ module.exports = async function (fastify) {
         type: "object",
         required: ["messages"],
         properties: {
-          messages:   { type: "array", items: { type: "object" } },
-          model:      { type: "string" },
-          stream:     { type: "boolean" },
-          max_tokens: { type: "integer" },
+          messages:    { type: "array", items: { type: "object" } },
+          model:       { type: "string" },
+          stream:      { type: "boolean" },
+          max_tokens:  { type: "integer" },
           temperature: { type: "number" },
+          session_id:  { type: "string" },
         },
       },
     },
@@ -153,7 +154,8 @@ module.exports = async function (fastify) {
   }, async (req, reply) => {
     const project   = req.resolvedProject;
     const projectId = project?.id ?? req.params?.projectId;
-    const { messages, model, stream, max_tokens, temperature } = req.body;
+    const { messages, model, stream, max_tokens, temperature, session_id } = req.body;
+    const sessionId = session_id || "default";
 
     const schemaName = project?.schema_name ?? (await db.query(
       `SELECT schema_name FROM projects WHERE id = $1 LIMIT 1`, [projectId]
@@ -328,6 +330,17 @@ ${functionsText}
         remainingToday = Math.max(0, PLATFORM_FREE_LIMIT - parseInt(usageRows[0].cnt));
       }
 
+      // Persist chat history (fire-and-forget)
+      const assistantContent = data.choices?.[0]?.message?.content || "";
+      const lastUserMsg = userMessages[userMessages.length - 1];
+      if (lastUserMsg && assistantContent) {
+        const sch = quoteIdent(schemaName);
+        db.query(
+          `INSERT INTO ${sch}._ai_chat_history (session_id, role, content, model) VALUES ($1,$2,$3,$4),($1,$5,$6,$4)`,
+          [sessionId, lastUserMsg.role, lastUserMsg.content, chatModel, "assistant", assistantContent]
+        ).catch(() => {});
+      }
+
       return {
         id: data.id,
         model: data.model,
@@ -402,6 +415,59 @@ ${functionsText}
     } catch (err) {
       return reply.code(502).send({ error: `AI embed error: ${err.message}`, code: "GEN_005" });
     }
+  });
+
+  // ── GET /ai/history ───────────────────────────────────────────────────
+  pr("get", "/ai/history", { preHandler: flexAuth }, async (req, reply) => {
+    const project    = req.resolvedProject;
+    const projectId  = project?.id ?? req.params?.projectId;
+    const sessionId  = req.query?.session_id || "default";
+    const limit      = Math.min(parseInt(req.query?.limit || "100"), 200);
+
+    const schemaName = project?.schema_name ?? (await db.query(
+      `SELECT schema_name FROM projects WHERE id = $1 LIMIT 1`, [projectId]
+    )).rows[0]?.schema_name;
+    if (!schemaName) return apiError(reply, "GEN_003", "Project not found");
+
+    await ensureV2Tables(schemaName);
+    const sch = quoteIdent(schemaName);
+
+    const { rows } = await db.query(
+      `SELECT id, session_id, role, content, model, created_at
+       FROM ${sch}._ai_chat_history
+       WHERE session_id = $1
+       ORDER BY created_at ASC
+       LIMIT $2`,
+      [sessionId, limit]
+    ).catch(() => ({ rows: [] }));
+
+    // Also return remaining free-tier count
+    let remainingToday = null;
+    if (PLATFORM_GROQ_KEY) {
+      const { rows: usageRows } = await db.query(
+        `SELECT COUNT(*) AS cnt FROM ${sch}._ai_usage
+         WHERE endpoint = '/ai/chat:platform' AND created_at >= CURRENT_DATE`
+      ).catch(() => ({ rows: [{ cnt: 0 }] }));
+      remainingToday = Math.max(0, PLATFORM_FREE_LIMIT - parseInt(usageRows[0].cnt));
+    }
+
+    return { messages: rows, remaining_today: remainingToday };
+  });
+
+  // ── DELETE /ai/history ─────────────────────────────────────────────────
+  pr("delete", "/ai/history", { preHandler: requireProjectOrPlatformAuth }, async (req, reply) => {
+    const project    = req.resolvedProject;
+    const projectId  = project?.id ?? req.params?.projectId;
+    const sessionId  = req.query?.session_id || "default";
+
+    const schemaName = project?.schema_name ?? (await db.query(
+      `SELECT schema_name FROM projects WHERE id = $1 LIMIT 1`, [projectId]
+    )).rows[0]?.schema_name;
+    if (!schemaName) return apiError(reply, "GEN_003", "Project not found");
+
+    const sch = quoteIdent(schemaName);
+    await db.query(`DELETE FROM ${sch}._ai_chat_history WHERE session_id = $1`, [sessionId]).catch(() => {});
+    return { ok: true };
   });
 
   // ── GET /ai/usage ──────────────────────────────────────────────────────
