@@ -15,7 +15,7 @@ const {
   quoteIdent,
   projectRoute,
 } = require("../../../../lib/v2/auth");
-const { ensureV2Tables } = require("../../../../lib/v2/schema");
+const { ensureV2Tables, ensureChatHistory } = require("../../../../lib/v2/schema");
 const { apiError }       = require("../../../../lib/v2/errors");
 const crypto             = require("crypto");
 
@@ -162,7 +162,7 @@ module.exports = async function (fastify) {
     )).rows[0]?.schema_name;
 
     if (!schemaName) return apiError(reply, "GEN_003", "Project not found");
-    await ensureV2Tables(schemaName);
+    await ensureChatHistory(schemaName);
 
     const creds = await resolveAICredentials(schemaName, model);
     if (!creds) {
@@ -429,7 +429,7 @@ ${functionsText}
     )).rows[0]?.schema_name;
     if (!schemaName) return apiError(reply, "GEN_003", "Project not found");
 
-    await ensureV2Tables(schemaName);
+    await ensureChatHistory(schemaName);
     const sch = quoteIdent(schemaName);
 
     const { rows } = await db.query(
@@ -483,7 +483,7 @@ ${functionsText}
     )).rows[0]?.schema_name;
 
     if (!schemaName) return apiError(reply, "GEN_003", "Project not found");
-    await ensureV2Tables(schemaName);
+    await ensureChatHistory(schemaName);
 
     const schema = quoteIdent(schemaName);
     const { rows } = await db.query(
