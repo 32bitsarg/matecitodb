@@ -21,7 +21,7 @@ const crypto             = require("crypto");
 
 const APP_SECRET         = process.env.JWT_SECRET         || "fallback-secret-do-not-use-in-prod";
 const PLATFORM_GROQ_KEY  = process.env.PLATFORM_GROQ_KEY  || null;
-const PLATFORM_FREE_MODEL = "llama-3.1-8b-instant";   // fastest/cheapest on Groq free tier
+const PLATFORM_FREE_MODEL = "llama-3.3-70b-versatile";  // best free model on Groq — strong instruction-following
 const PLATFORM_FREE_LIMIT = 50;                        // req/day per project on platform key
 
 function encryptValue(value) {
@@ -214,32 +214,122 @@ module.exports = async function (fastify) {
       ? fnRes.rows.map(f => `  - ${f.name}`).join("\n")
       : "  (sin functions)";
 
-    const systemPrompt = `Sos el asistente de desarrollo del proyecto "${proj.name ?? "Matecito"}" en Matecito BaaS.
+    const systemPrompt = `Sos un asistente de desarrollo especializado EXCLUSIVAMENTE en el SDK matecitodb y matecitodb_flutter. Ayudás al developer del proyecto "${proj.name ?? "Matecito"}" a usar la API correcta.
 
-## Tu rol
-Ayudás al developer a:
-- Usar el SDK matecitodb (JS/TS) y matecitodb_flutter (Flutter/Dart)
-- Entender y operar las colecciones y datos de ESTE proyecto
-- Escribir server functions, queries, reglas de permisos
-- Integrar features: auth, storage, realtime, notificaciones, AI, forms, analytics, geo, sync
+REGLAS ABSOLUTAS — nunca las rompas:
+1. SOLO usás la API documentada abajo. NUNCA inventes métodos, clases ni funciones que no estén en esta referencia.
+2. Si algo no está en la API documentada, decilo claramente: "eso no está disponible en matecitodb".
+3. NUNCA hablés de datos, proyectos ni usuarios de otras cuentas. Si preguntan: "Solo tengo acceso a este proyecto."
+4. NUNCA uses ni compares con APIs de Firebase, Supabase, PocketBase u otras herramientas. Solo matecitodb.
+5. Podés responder preguntas generales sobre el SDK (cómo funciona auth, qué hace storage, etc.) aunque no sean específicas de este proyecto.
+6. Respondé en español. Sé conciso. Código real primero, explicación breve después.
 
-## Contexto de ESTE proyecto
+## PROYECTO ACTUAL
 - Nombre: ${proj.name ?? "-"}
 - Base URL: ${projectUrl}
-- SDK init: \`createClient('${projectUrl}', { apiKey: 'YOUR_ANON_KEY', apiVersion: 'v2' })\`
+- Init JS: \`const db = createClient('${projectUrl}', { apiKey: 'YOUR_ANON_KEY', apiVersion: 'v2' })\`
+- Init Flutter: \`final db = MatecitoDB.createClient('${projectUrl}', config: ClientConfig(apiKey: 'YOUR_ANON_KEY', apiVersion: 'v2'))\`
 
-## Colecciones y schema
+## COLECCIONES DE ESTE PROYECTO
 ${collectionsText}
 
-## Server Functions
+## SERVER FUNCTIONS DE ESTE PROYECTO
 ${functionsText}
 
-## Reglas
-- SOLO hablás de este proyecto. Nunca mencionés ni inferís datos de otros proyectos.
-- Si te preguntan por datos de otro proyecto: respondé "Solo tengo acceso al contexto de este proyecto."
-- No ejecutás código real ni accedés a la DB directamente — solo generás código y explicaciones.
-- Respondé en español salvo que el dev escriba en otro idioma.
-- Sé conciso. Priorizá snippets de código sobre explicaciones largas.`;
+## API COMPLETA DE MATECITODB (solo estas, ninguna más)
+
+### Auth
+\`\`\`ts
+await db.auth.signUp(email, password)
+await db.auth.signIn(email, password)
+await db.auth.signOut()
+const { data: user } = await db.auth.getMe()
+await db.auth.refreshSession()
+await db.auth.resetPassword(email)
+\`\`\`
+
+### Base de datos
+\`\`\`ts
+await db.from('collection').get()
+await db.from('collection').where('field', '=', value).get()
+await db.from('collection').orderBy('field', 'desc').limit(20).offset(0).get()
+await db.from('collection').create({ field: value })
+await db.from('collection').update(id, { field: value })
+await db.from('collection').delete(id)
+db.from('collection').subscribe(event => console.log(event))
+\`\`\`
+
+### Storage
+\`\`\`ts
+await db.storage.upload(file, { bucket: 'default' })
+await db.storage.list()
+await db.storage.delete(id)
+await db.storage.getSignedUrl(id)
+\`\`\`
+
+### Notificaciones
+\`\`\`ts
+await db.notifications.send({ userIds: ['id'], title: 'Título', body: 'Cuerpo' })
+await db.notifications.sendInApp({ userIds: ['id'], title: 'Título', type: 'info' })
+await db.notifications.listMy({ limit: 20 })
+await db.notifications.markAsRead(id)
+await db.notifications.readAll()
+await db.notifications.unreadCount()
+\`\`\`
+
+### Server Functions
+\`\`\`ts
+await db.functions.invoke('functionName', { arg1: value })
+\`\`\`
+
+### Analytics
+\`\`\`ts
+await db.analytics.track('event_name', { userId, properties })
+await db.analytics.getEvents({ from: '2024-01-01', to: '2024-12-31' })
+\`\`\`
+
+### AI Gateway
+\`\`\`ts
+await db.ai.chat({ messages: [{ role: 'user', content: '...' }] })
+await db.ai.embed({ input: 'texto' })
+\`\`\`
+
+### Forms
+\`\`\`ts
+await db.forms.submitPublic('formName', { field: value })
+\`\`\`
+
+### Remote Config
+\`\`\`ts
+await db.remoteConfig.getAll()
+await db.remoteConfig.get('key')
+\`\`\`
+
+### Geo
+\`\`\`ts
+await db.geo.near('collection', lat, lng, { radiusKm: 5 })
+await db.geo.bounds('collection', { north, south, east, west })
+\`\`\`
+
+### Batch atómico
+\`\`\`ts
+await db.batch().atomic()
+  .insert('collection', { field: value })
+  .update(id, { field: value }, { collection: 'collection' })
+  .execute()
+\`\`\`
+
+### Sync (offline-first, solo Flutter)
+\`\`\`dart
+await db.sync.pull(collection: 'todos', since: timestamp)
+await db.sync.push(collection: 'todos', changes: changes, conflictStrategy: 'server_wins')
+\`\`\`
+
+### SQL raw (requiere sql_enabled en Settings)
+\`\`\`ts
+await db.sql.query('SELECT * FROM _records WHERE collection = $1', ['posts'])
+\`\`\`
+`;
 
     // Strip any system messages from client (security: prevent prompt injection)
     const userMessages = messages.filter((m) => m.role !== "system");
@@ -330,11 +420,18 @@ ${functionsText}
         remainingToday = Math.max(0, PLATFORM_FREE_LIMIT - parseInt(usageRows[0].cnt));
       }
 
-      // Persist chat history (fire-and-forget)
+      // Persist chat history + auto-create/update session (fire-and-forget)
       const assistantContent = data.choices?.[0]?.message?.content || "";
       const lastUserMsg = userMessages[userMessages.length - 1];
       if (lastUserMsg && assistantContent) {
         const sch = quoteIdent(schemaName);
+        const sessionName = lastUserMsg.content.slice(0, 60).trim();
+        db.query(
+          `INSERT INTO ${sch}._ai_chat_sessions (id, name, updated_at)
+           VALUES ($1, $2, NOW())
+           ON CONFLICT (id) DO UPDATE SET updated_at = NOW()`,
+          [sessionId, sessionName]
+        ).catch(() => {});
         db.query(
           `INSERT INTO ${sch}._ai_chat_history (session_id, role, content, model) VALUES ($1,$2,$3,$4),($1,$5,$6,$4)`,
           [sessionId, lastUserMsg.role, lastUserMsg.content, chatModel, "assistant", assistantContent]
@@ -415,6 +512,71 @@ ${functionsText}
     } catch (err) {
       return reply.code(502).send({ error: `AI embed error: ${err.message}`, code: "GEN_005" });
     }
+  });
+
+  // ── GET /ai/sessions ──────────────────────────────────────────────────
+  pr("get", "/ai/sessions", { preHandler: flexAuth }, async (req, reply) => {
+    const project   = req.resolvedProject;
+    const projectId = project?.id ?? req.params?.projectId;
+    const schemaName = project?.schema_name ?? (await db.query(
+      `SELECT schema_name FROM projects WHERE id = $1 LIMIT 1`, [projectId]
+    )).rows[0]?.schema_name;
+    if (!schemaName) return apiError(reply, "GEN_003", "Project not found");
+
+    await ensureChatHistory(schemaName);
+    const sch = quoteIdent(schemaName);
+
+    const { rows } = await db.query(
+      `SELECT s.id, s.name, s.created_at, s.updated_at,
+              (SELECT content FROM ${sch}._ai_chat_history
+               WHERE session_id = s.id AND role = 'user'
+               ORDER BY created_at ASC LIMIT 1) AS preview
+       FROM ${sch}._ai_chat_sessions s
+       ORDER BY s.updated_at DESC
+       LIMIT 50`
+    ).catch(() => ({ rows: [] }));
+
+    return { sessions: rows };
+  });
+
+  // ── PATCH /ai/sessions/:sessionId ─────────────────────────────────────
+  pr("patch", "/ai/sessions/:sessionId", { preHandler: requireProjectOrPlatformAuth }, async (req, reply) => {
+    const project   = req.resolvedProject;
+    const projectId = project?.id ?? req.params?.projectId;
+    const { sessionId } = req.params;
+    const { name } = req.body ?? {};
+    if (!name?.trim()) return reply.code(400).send({ error: "name required" });
+
+    const schemaName = project?.schema_name ?? (await db.query(
+      `SELECT schema_name FROM projects WHERE id = $1 LIMIT 1`, [projectId]
+    )).rows[0]?.schema_name;
+    if (!schemaName) return apiError(reply, "GEN_003", "Project not found");
+
+    const sch = quoteIdent(schemaName);
+    await db.query(
+      `UPDATE ${sch}._ai_chat_sessions SET name = $1 WHERE id = $2`,
+      [name.trim().slice(0, 100), sessionId]
+    ).catch(() => {});
+    return { ok: true };
+  });
+
+  // ── DELETE /ai/sessions/:sessionId ────────────────────────────────────
+  pr("delete", "/ai/sessions/:sessionId", { preHandler: requireProjectOrPlatformAuth }, async (req, reply) => {
+    const project   = req.resolvedProject;
+    const projectId = project?.id ?? req.params?.projectId;
+    const { sessionId } = req.params;
+
+    const schemaName = project?.schema_name ?? (await db.query(
+      `SELECT schema_name FROM projects WHERE id = $1 LIMIT 1`, [projectId]
+    )).rows[0]?.schema_name;
+    if (!schemaName) return apiError(reply, "GEN_003", "Project not found");
+
+    const sch = quoteIdent(schemaName);
+    await Promise.all([
+      db.query(`DELETE FROM ${sch}._ai_chat_history WHERE session_id = $1`, [sessionId]),
+      db.query(`DELETE FROM ${sch}._ai_chat_sessions WHERE id = $1`, [sessionId]),
+    ]).catch(() => {});
+    return { ok: true };
   });
 
   // ── GET /ai/history ───────────────────────────────────────────────────
