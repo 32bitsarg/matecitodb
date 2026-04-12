@@ -130,12 +130,8 @@ async function logUsage(schemaName, model, promptTokens, completionTokens, userI
 }
 
 module.exports = async function (fastify) {
-  // Helper: register route under both /:projectId/path and /path
-  const pr = (method, path, opts, handler) => {
-    if (typeof opts === "function") { handler = opts; opts = {}; }
-    fastify[method](`/:projectId${path}`, opts, handler);
-    fastify[method](path, opts, handler);
-  };
+  // projectRoute already imported from auth — registers both /:projectId/path and /path
+  const pr = (method, path, opts, handler) => projectRoute(fastify, method.toUpperCase(), path, opts, handler);
 
   // ── POST /ai/chat ──────────────────────────────────────────────────────
   pr("post", "/ai/chat", {
