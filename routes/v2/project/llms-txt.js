@@ -11,7 +11,7 @@
 //   - If project.llms_txt_public = false → requires valid anon or service key
 //     (x-matecito-key header or ?key= query param)
 
-const { db, quoteIdent, projectRoute, flexAuth } = require("../../../../lib/v2/auth");
+const { db, quoteIdent, projectRoute, flexAuth } = require("../../../lib/v2/auth");
 
 module.exports = async function (fastify) {
   projectRoute(fastify, "GET", "/llms.txt", {}, async (req, reply) => {
