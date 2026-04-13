@@ -41,8 +41,8 @@ const PLATFORM_HOST = process.env.PLATFORM_HOST || `api.${DOMAIN}`;
 function rewritePublicPath(pathname) {
   if (!pathname) return pathname;
 
-  // ya es interna
-  if (pathname.startsWith("/api/v1/project")) {
+  // ya es interna — v1 o v2
+  if (pathname.startsWith("/api/v1/project") || pathname.startsWith("/api/v2/project")) {
     return pathname;
   }
 
