@@ -33,7 +33,7 @@ module.exports = async function (fastify) {
           storage_quota_mb:   { type: "integer", minimum: 10, maximum: 50000 },
           log_retention_days: { type: "integer", minimum: 1, maximum: 365 },
           sql_enabled:        { type: "boolean" },
-          allowed_origins:    { oneOf: [{ type: "array", items: { type: "string" } }, { type: "null" }] },
+          allowed_origins:    { type: ["array", "null"], items: { type: "string" } },
           llms_txt_public:    { type: "boolean" },
         },
       },
