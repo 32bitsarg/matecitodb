@@ -4,25 +4,20 @@ const { fireWebhooks }     = require("../../../lib/webhooks");
 
 const SAFE_KEY = /^[a-zA-Z_][a-zA-Z0-9_]{0,63}$/;
 
-function parseFilters(raw) {
-  if (!raw) return [];
+const OP_MAP = { eq: '=', neq: '!=', gt: '>', gte: '>=', lt: '<', lte: '<=', like: 'LIKE', ilike: 'ILIKE' };
 
-  const list = Array.isArray(raw) ? raw : [raw];
-  const result = [];
-
-  for (const entry of list) {
-    const colonIdx = String(entry).indexOf(":");
-    if (colonIdx <= 0) continue;
-
-    const key = entry.slice(0, colonIdx).trim();
-    const val = entry.slice(colonIdx + 1).trim();
-
-    if (!SAFE_KEY.test(key)) continue;
-
-    result.push({ key, val });
+function parseFilters(query) {
+  const filters = [];
+  const SKIP = new Set(['collection','limit','select','page','sort','order','include_deleted','include_expired','search','or']);
+  for (const key in query) {
+    if (!SAFE_KEY.test(key) || SKIP.has(key)) continue;
+    const raw = query[key];
+    if (typeof raw !== 'string') continue;
+    const dotIdx = raw.indexOf('.');
+    if (dotIdx <= 0) continue;
+    filters.push({ key, op: raw.slice(0, dotIdx), val: raw.slice(dotIdx + 1) });
   }
-
-  return result;
+  return filters;
 }
 
 module.exports = async function (fastify) {
@@ -34,7 +29,6 @@ module.exports = async function (fastify) {
 
     const {
       collection,
-      filter,
       limit = "100",
       select
     } = req.query;
@@ -129,76 +123,71 @@ module.exports = async function (fastify) {
     const perm = await checkPermission(schemaName, collection, "delete", req, reply);
     if (!perm.allowed) return;
 
-    const where = [];
-    const values = [];
+    // ── Build subquery WHERE ──────────────────────────────────────────────────
+    const subWhere  = [];
+    const subValues = [];
 
-    values.push(collection);
-    where.push(`collection = $${values.length}`);
+    subValues.push(collection);
+    subWhere.push(`collection = $${subValues.length}`);
+    subWhere.push(`deleted_at IS NULL`);
+    subWhere.push(`(expires_at IS NULL OR expires_at > NOW())`);
 
-    where.push(`deleted_at IS NULL`);
-
-    // filtros simples (tipo eq)
-    const filters = parseFilters(filter);
-    for (const { key, val } of filters) {
-      const col = `data->>'${key}'`;
-      values.push(val);
-      where.push(`${col} = $${values.length}`);
+    const filters = parseFilters(req.query);
+    for (const { key, op, val } of filters) {
+      const sqlOp = OP_MAP[op];
+      if (!sqlOp) continue;
+      subValues.push(val);
+      subWhere.push(`data->>'${key}' ${sqlOp} $${subValues.length}`);
     }
 
-    // RLS
     if (perm.filterSql) {
-      let rlsIdx = values.length;
-      values.push(...perm.filterValues);
-      where.push(perm.filterSql.replace(/\$\?/g, () => `$${++rlsIdx}`));
+      let idx = subValues.length;
+      subValues.push(...perm.filterValues);
+      subWhere.push(perm.filterSql.replace(/\$\?/g, () => `$${++idx}`));
     }
 
-    const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+    subValues.push(limitNum);
+    const limitIdx = subValues.length;
 
-    // detectar soft delete
+    const subQuery = `
+      SELECT id FROM ${schema}._records
+      WHERE ${subWhere.join(" AND ")}
+      ORDER BY created_at DESC
+      LIMIT $${limitIdx}
+    `;
+
+    // ── detectar soft delete ──────────────────────────────────────────────────
     const colInfo = await db.query(
       `SELECT soft_delete FROM ${schema}._collections WHERE name = $1 LIMIT 1`,
       [collection]
     );
-
     const softDelete = colInfo.rows[0]?.soft_delete;
 
-    let query;
+    // ── Postgres-safe bulk DELETE/soft-delete via subquery ────────────────────
+    const query = softDelete
+      ? `UPDATE ${schema}._records
+         SET deleted_at = NOW(), updated_at = NOW()
+         WHERE id IN (${subQuery})
+         RETURNING id`
+      : `DELETE FROM ${schema}._records
+         WHERE id IN (${subQuery})
+         RETURNING id`;
 
-    if (softDelete) {
-      query = `
-        UPDATE ${schema}._records
-        SET deleted_at = NOW(), updated_at = NOW()
-        ${whereClause}
-        LIMIT ${limitNum}
-        RETURNING *
-      `;
-    } else {
-      query = `
-        DELETE FROM ${schema}._records
-        ${whereClause}
-        LIMIT ${limitNum}
-        RETURNING *
-      `;
-    }
-
-    const result = await db.query(query, values);
+    const result = await db.query(query, subValues);
 
     for (const row of result.rows) {
       emitProjectEvent(projectId, {
         type: "record.deleted",
         projectId,
         collection,
-        recordId: row.id
+        recordId: row.id,
       });
-
-      fireWebhooks(schemaName, collection, "record.deleted", {
-        recordId: row.id
-      }).catch(() => {});
+      fireWebhooks(schemaName, collection, "record.deleted", { recordId: row.id }).catch(() => {});
     }
 
     return {
       count: result.rows.length,
-      records: select ? result.rows : undefined
+      deleted: result.rows.map(r => r.id),
     };
   };
 

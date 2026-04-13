@@ -255,7 +255,7 @@ module.exports = async function (fastify) {
 
     return {
       count: updatedRecords.length,
-      records: select ? updatedRecords : undefined,
+      records: updatedRecords,
     };
   };
 
