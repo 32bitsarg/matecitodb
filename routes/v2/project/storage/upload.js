@@ -8,8 +8,8 @@ const {
 } = require("../../../../lib/v2/auth");
 const { apiError } = require("../../../../lib/v2/errors");
 
-const STORAGE_BASE = process.env.STORAGE_PATH || path.join(__dirname, "../../../../../storage");
-const STORAGE_URL  = process.env.STORAGE_URL  || "http://localhost:3000/storage/files";
+const STORAGE_BASE   = process.env.STORAGE_PATH    || path.join(__dirname, "../../../../../storage");
+const PUBLIC_API_BASE = process.env.PUBLIC_API_BASE || "https://api.matecito.dev";
 
 async function checkStorageQuota(projectId, additionalBytes) {
   const { rows } = await db.query(
@@ -60,17 +60,21 @@ module.exports = async function (fastify) {
       throw err;
     }
 
-    const stat      = fs.statSync(storagePath);
-    const publicUrl = `${STORAGE_URL}/${projectId}/${filename}`;
+    const stat = fs.statSync(storagePath);
 
     const { rows } = await db.query(
       `INSERT INTO files (project_id, storage_path, url, mime, size, width, height, variant, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 'webp', NOW())
-       RETURNING id, project_id, url, mime, size, width, height, variant, created_at`,
-      [projectId, storagePath, publicUrl, "image/webp", stat.size, metadata.width || null, metadata.height || null]
+       VALUES ($1, $2, '', $3, $4, $5, $6, 'webp', NOW())
+       RETURNING id, project_id, mime, size, width, height, variant, created_at`,
+      [projectId, storagePath, "image/webp", stat.size, metadata.width || null, metadata.height || null]
     );
 
-    return reply.code(201).send({ file: rows[0] });
+    const fileId    = rows[0].id;
+    const publicUrl = `${PUBLIC_API_BASE}/api/v2/project/storage/files/${fileId}`;
+
+    await db.query(`UPDATE files SET url = $1 WHERE id = $2`, [publicUrl, fileId]);
+
+    return reply.code(201).send({ file: { ...rows[0], url: publicUrl } });
   };
 
   projectRoute(fastify, "POST", "/storage/upload", { preHandler: flexAuth }, handler);
