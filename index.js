@@ -395,6 +395,8 @@ fastify.register(require("@fastify/jwt"), {
   secret: process.env.JWT_SECRET,
 });
 
+fastify.register(require("@fastify/websocket"));
+
 // ─── v1 routes ────────────────────────────────────────────────────────────────
 fastify.register(require("./routes/platform"), {
   prefix: "/api/v1/platform",
