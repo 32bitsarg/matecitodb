@@ -12,6 +12,8 @@ module.exports = async function (fastify) {
     const projectId = req.params?.projectId ?? req.resolvedProject?.id;
     if (!projectId) return reply.code(400).send({ error: "projectId required", code: "GEN_002" });
 
+    await db.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS llms_txt_public BOOLEAN DEFAULT FALSE`).catch(() => {});
+
     const { rows } = await db.query(
       `SELECT id, name, subdomain, storage_quota_mb, log_retention_days, sql_enabled, allowed_origins,
               COALESCE(llms_txt_public, false) AS llms_txt_public, created_at
