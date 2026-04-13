@@ -3,7 +3,7 @@ const path = require("path");
 const sharp = require("sharp");
 const {
   db,
-  requireProjectOrPlatformAuth,
+  flexAuth,
   projectRoute,
 } = require("../../../../lib/v2/auth");
 const { apiError } = require("../../../../lib/v2/errors");
@@ -73,5 +73,5 @@ module.exports = async function (fastify) {
     return reply.code(201).send({ file: rows[0] });
   };
 
-  projectRoute(fastify, "POST", "/storage/upload", { preHandler: requireProjectOrPlatformAuth }, handler);
+  projectRoute(fastify, "POST", "/storage/upload", { preHandler: flexAuth }, handler);
 };
