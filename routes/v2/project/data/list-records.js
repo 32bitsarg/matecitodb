@@ -95,11 +95,12 @@ module.exports = async function (fastify) {
     const { conditions, orConditions } = parseQueryFilters(req.query, fields);
 
     if (conditions.length > 0 || orConditions.length > 0) {
+      const beforeLen = values.length;
       const { where: filterWhere, values: filterValues } = buildWhereClause(
         conditions, orConditions, fields, values
       );
       where.push(...filterWhere);
-      values.push(...filterValues);
+      values.push(...filterValues.slice(beforeLen));
     }
 
     // Legacy filters (backward compatible: campo.op:valor with old OP_MAP)
@@ -131,11 +132,12 @@ module.exports = async function (fastify) {
     if (or) {
       const orParsed = parseQueryFilters({ or: Array.isArray(or) ? or : [or] }, fields);
       if (orParsed.orConditions.length > 0) {
+        const orBeforeLen = values.length;
         const { where: orWhere, values: orValues } = buildWhereClause(
           [], orParsed.orConditions, fields, values
         );
         where.push(...orWhere);
-        values.push(...orValues);
+        values.push(...orValues.slice(orBeforeLen));
       }
     }
 
