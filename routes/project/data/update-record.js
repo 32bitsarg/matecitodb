@@ -11,25 +11,28 @@ const { fireWebhooks }     = require("../../../lib/webhooks");
 
 const SAFE_KEY = /^[a-zA-Z_][a-zA-Z0-9_]{0,63}$/;
 
-function parseFilters(raw) {
-  if (!raw) return [];
-
-  const list = Array.isArray(raw) ? raw : [raw];
-  const result = [];
-
-  for (const entry of list) {
-    const colonIdx = String(entry).indexOf(":");
-    if (colonIdx <= 0) continue;
-
-    const key = entry.slice(0, colonIdx).trim();
-    const val = entry.slice(colonIdx + 1).trim();
-
+// Parses SDK-style query params: ?tag=eq.alpha&value=gte.10
+// Returns [{ key, op, val }] — only keys passing SAFE_KEY are included.
+function parseFilters(query) {
+  const filters = [];
+  for (const key in query) {
     if (!SAFE_KEY.test(key)) continue;
+    // skip known non-filter params
+    if (['collection', 'limit', 'select', 'page', 'sort', 'order',
+         'include_deleted', 'include_expired', 'search', 'or'].includes(key)) continue;
 
-    result.push({ key, val });
+    const raw = query[key];
+    if (typeof raw !== 'string') continue;
+
+    const dotIdx = raw.indexOf('.');
+    if (dotIdx <= 0) continue;
+
+    const op  = raw.slice(0, dotIdx);
+    const val = raw.slice(dotIdx + 1);
+
+    filters.push({ key, op, val });
   }
-
-  return result;
+  return filters;
 }
 
 module.exports = async function (fastify) {
@@ -40,7 +43,6 @@ module.exports = async function (fastify) {
 
     const {
       collection,
-      filter,
       limit = "100",
       select
     } = req.query;
@@ -177,11 +179,13 @@ module.exports = async function (fastify) {
     subWhere.push(`(expires_at IS NULL OR expires_at > NOW())`);
 
     // User filters — only allow keys that pass SAFE_KEY, values always parameterized
-    const filters = parseFilters(filter);
-    for (const { key, val } of filters) {
-      if (!SAFE_KEY.test(key)) continue;
+    const OP_MAP = { eq: '=', neq: '!=', gt: '>', gte: '>=', lt: '<', lte: '<=', like: 'LIKE', ilike: 'ILIKE' };
+    const filters = parseFilters(req.query);
+    for (const { key, op, val } of filters) {
+      const sqlOp = OP_MAP[op];
+      if (!sqlOp) continue;
       subValues.push(val);
-      subWhere.push(`data->>'${key}' = $${subValues.length}`);
+      subWhere.push(`data->>'${key}' ${sqlOp} $${subValues.length}`);
     }
 
     // Row-level security
