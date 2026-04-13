@@ -42,7 +42,10 @@ module.exports = async function (fastify) {
       if (!check.rows[0]) return reply.code(403).send({ error: "Forbidden" });
     }
 
-    return { record: result.rows[0] };
+    // Flatten: merge data JSONB into top-level fields
+    const row = result.rows[0];
+    const { data, ...rest } = row;
+    return { record: { ...rest, ...(data ?? {}) } };
   };
 
   projectRoute(fastify, "GET", "/records/:id", {

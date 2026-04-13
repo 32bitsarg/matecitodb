@@ -279,8 +279,15 @@ module.exports = async function (fastify) {
       const total = parseInt(countRes.rows[0].count, 10);
       const pages = Math.ceil(total / limitNum);
 
+      // Flatten: merge data JSONB into top-level fields
+      const records = dataRes.rows.map(row => {
+        if (!row.data || selectFields[0] !== '*') return row;
+        const { data, ...rest } = row;
+        return { ...rest, ...data };
+      });
+
       return {
-        records: dataRes.rows,
+        records,
         pagination: {
           page:        pageNum,
           limit:       limitNum,
