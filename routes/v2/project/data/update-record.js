@@ -13,17 +13,24 @@ const { buildSearchVectorUpdate } = require("../../../../lib/v2/fulltext");
 
 const SAFE_KEY = /^[a-zA-Z_][a-zA-Z0-9_]{0,63}$/;
 
-function parseFilters(raw) {
-  if (!raw) return [];
-  const list = Array.isArray(raw) ? raw : [raw];
-  return list.map(entry => {
-    const colonIdx = String(entry).indexOf(":");
-    if (colonIdx <= 0) return null;
-    const key = entry.slice(0, colonIdx).trim();
-    const val = entry.slice(colonIdx + 1).trim();
-    if (!SAFE_KEY.test(key)) return null;
-    return { key, val };
-  }).filter(Boolean);
+const OP_MAP = { eq: '=', neq: '!=', gt: '>', gte: '>=', lt: '<', lte: '<=', like: 'LIKE', ilike: 'ILIKE' };
+const SKIP_PARAMS = new Set(['collection','limit','select','page','sort','order','include_deleted','include_expired','search','or','filter']);
+
+// Parses SDK-style query params: ?tag=eq.alpha&value=gte.10
+function parseFilters(query) {
+  const filters = [];
+  for (const key in query) {
+    if (!SAFE_KEY.test(key) || SKIP_PARAMS.has(key)) continue;
+    const raw = query[key];
+    if (typeof raw !== 'string') continue;
+    const dotIdx = raw.indexOf('.');
+    if (dotIdx <= 0) continue;
+    const op  = raw.slice(0, dotIdx);
+    const val = raw.slice(dotIdx + 1);
+    if (!OP_MAP[op]) continue;
+    filters.push({ key, op, val });
+  }
+  return filters;
 }
 
 module.exports = async function (fastify) {
@@ -32,7 +39,7 @@ module.exports = async function (fastify) {
     const projectId = project?.id ?? req.params?.projectId;
     const { id }    = req.params;
 
-    const { collection, filter, limit = "100" } = req.query;
+    const { collection, limit = "100" } = req.query;
     const { data, merge = true, expires_at }    = req.body;
 
     if (!data || typeof data !== "object") {
@@ -131,9 +138,9 @@ module.exports = async function (fastify) {
     where.push(`collection = $${values.length}`);
     where.push(`deleted_at IS NULL`);
 
-    for (const { key, val } of parseFilters(filter)) {
+    for (const { key, op, val } of parseFilters(req.query)) {
       values.push(val);
-      where.push(`data->>'${key}' = $${values.length}`);
+      where.push(`data->>'${key}' ${OP_MAP[op]} $${values.length}`);
     }
 
     if (perm.filterSql) {
@@ -169,7 +176,8 @@ module.exports = async function (fastify) {
       enqueueTrigger(schemaName, collection, "record.updated", row);
     }
 
-    return { count: rows.length };
+    const records = rows.map(row => { const { data: d, ...rest } = row; return { ...rest, ...(d ?? {}) }; });
+    return { count: records.length, records };
   };
 
   projectRoute(fastify, "PATCH", "/records/:id?", {

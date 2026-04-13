@@ -71,6 +71,40 @@ module.exports = async function (fastify) {
     );
     const fieldsMap = new Map(fieldRows.map(f => [f.name, f]));
 
+    // ── Auto-detect campos nuevos ─────────────────────────────────────────────
+    function inferType(value) {
+      if (value === null || value === undefined) return "text";
+      if (typeof value === "boolean") return "bool";
+      if (typeof value === "number")  return "number";
+      if (typeof value === "object")  return "json";
+      if (typeof value === "string") {
+        if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return "email";
+        if (/^\d{4}-\d{2}-\d{2}(T[\d:.Z+-]+)?$/.test(value)) return "date";
+      }
+      return "text";
+    }
+
+    const newFields = [];
+    for (const [key, value] of Object.entries(data)) {
+      if (!SAFE_KEY.test(key) || fieldsMap.has(key)) continue;
+      const type = inferType(value);
+      newFields.push({ name: key, type });
+    }
+
+    if (newFields.length > 0) {
+      const placeholders = newFields.map((_, i) => `($1, $${i * 2 + 2}, $${i * 2 + 3})`).join(", ");
+      const params = [collection];
+      for (const f of newFields) {
+        params.push(f.name, f.type);
+        fieldsMap.set(f.name, { name: f.name, type: f.type, required: false });
+      }
+      await db.query(
+        `INSERT INTO ${schema}._fields (collection, name, type) VALUES ${placeholders} ON CONFLICT (collection, name) DO NOTHING`,
+        params
+      );
+    }
+
+    // ── Castear + validar ─────────────────────────────────────────────────────
     const cleanData = {};
     for (const [key, value] of Object.entries(data)) {
       if (!SAFE_KEY.test(key)) continue;
@@ -97,7 +131,8 @@ module.exports = async function (fastify) {
       [collection, cleanData, expiresAt]
     );
 
-    const record = rows[0];
+    const { data: rowData, ...rest } = rows[0];
+    const record = { ...rest, ...(rowData ?? {}) };
 
     // Update search_vector if collection has search_fields configured
     const searchUpdate = await buildSearchVectorUpdate(schemaName, collection, record.id, cleanData);
