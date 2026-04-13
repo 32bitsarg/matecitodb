@@ -135,15 +135,16 @@ module.exports = async function (fastify) {
       `;
 
       const result = await db.query(query, values);
-      const record = result.rows[0];
+      if (!result.rows[0]) return reply.code(403).send({ error: "Forbidden" });
 
-      if (!record) return reply.code(403).send({ error: "Forbidden" });
+      const { data: rowData, ...rest } = result.rows[0];
+      const record = { ...rest, ...(rowData ?? {}) };
 
       emitProjectEvent(projectId, {
         type: "record.updated",
         projectId,
         collection,
-        record
+        record,
       });
 
       fireWebhooks(schemaName, collection, "record.updated", { record }).catch(() => {});
@@ -162,31 +163,47 @@ module.exports = async function (fastify) {
     const perm = await checkPermission(schemaName, collection, "update", req, reply);
     if (!perm.allowed) return;
 
-    const where = [];
-    const values = [];
+    // ── Build subquery WHERE (for the inner SELECT) ──────────────────────────
+    // All user-supplied values go through parameterized placeholders.
+    // Field keys are validated against SAFE_KEY before interpolation.
+    // RLS filterSql uses $? placeholders replaced sequentially — never raw input.
 
-    values.push(collection);
-    where.push(`collection = $${values.length}`);
-    where.push(`deleted_at IS NULL`);
+    const subWhere  = [];
+    const subValues = [];
 
-    // filters
+    subValues.push(collection);
+    subWhere.push(`collection = $${subValues.length}`);
+    subWhere.push(`deleted_at IS NULL`);
+    subWhere.push(`(expires_at IS NULL OR expires_at > NOW())`);
+
+    // User filters — only allow keys that pass SAFE_KEY, values always parameterized
     const filters = parseFilters(filter);
     for (const { key, val } of filters) {
-      const col = `data->>'${key}'`;
-      values.push(val);
-      where.push(`${col} = $${values.length}`);
+      if (!SAFE_KEY.test(key)) continue;
+      subValues.push(val);
+      subWhere.push(`data->>'${key}' = $${subValues.length}`);
     }
 
-    // RLS
+    // Row-level security
     if (perm.filterSql) {
-      let idx = values.length;
-      values.push(...perm.filterValues);
-      where.push(perm.filterSql.replace(/\$\?/g, () => `$${++idx}`));
+      let idx = subValues.length;
+      subValues.push(...perm.filterValues);
+      subWhere.push(perm.filterSql.replace(/\$\?/g, () => `$${++idx}`));
     }
 
-    const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+    subValues.push(limitNum);
+    const limitIdx = subValues.length;
 
-    // data expression
+    const subQuery = `
+      SELECT id FROM ${schema}._records
+      WHERE ${subWhere.join(" AND ")}
+      ORDER BY created_at DESC
+      LIMIT $${limitIdx}
+    `;
+
+    // ── SET clause — data expression + optional expires_at ────────────────────
+    const values = [...subValues];
+
     values.push(data);
     const dataIdx = values.length;
 
@@ -204,34 +221,37 @@ module.exports = async function (fastify) {
       ? `data = data || $${dataIdx}::jsonb`
       : `data = $${dataIdx}::jsonb`;
 
+    // ── Postgres-safe bulk UPDATE via subquery (no LIMIT on UPDATE) ───────────
     const query = `
       UPDATE ${schema}._records
       SET ${dataExpr},
           updated_at = NOW()
           ${expiresSql}
-      ${whereClause}
-      LIMIT ${limitNum}
+      WHERE id IN (${subQuery})
       RETURNING *
     `;
 
     const result = await db.query(query, values);
 
-    for (const row of result.rows) {
+    const updatedRecords = result.rows.map(row => {
+      const { data: rowData, ...rest } = row;
+      return { ...rest, ...(rowData ?? {}) };
+    });
+
+    for (const record of updatedRecords) {
       emitProjectEvent(projectId, {
         type: "record.updated",
         projectId,
         collection,
-        record: row
+        record,
       });
 
-      fireWebhooks(schemaName, collection, "record.updated", {
-        record: row
-      }).catch(() => {});
+      fireWebhooks(schemaName, collection, "record.updated", { record }).catch(() => {});
     }
 
     return {
-      count: result.rows.length,
-      records: select ? result.rows : undefined
+      count: updatedRecords.length,
+      records: select ? updatedRecords : undefined,
     };
   };
 
