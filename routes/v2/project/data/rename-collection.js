@@ -14,6 +14,22 @@ module.exports = async function (fastify) {
     const projectId = project?.id ?? req.params?.projectId;
     const { name }  = req.params;
     const newName   = String(req.body?.name || "").trim();
+    const softDelete = req.body?.soft_delete;
+
+    // soft_delete-only update (no rename needed)
+    if (!newName && softDelete !== undefined) {
+      const schemaName = project?.schema_name ?? (await db.query(
+        `SELECT schema_name FROM projects WHERE id = $1 LIMIT 1`, [projectId]
+      )).rows[0]?.schema_name;
+      if (!schemaName) return apiError(reply, "GEN_003", "Project not found");
+      const schema = quoteIdent(schemaName);
+      const { rows } = await db.query(
+        `UPDATE ${schema}._collections SET soft_delete = $1 WHERE name = $2 RETURNING *`,
+        [softDelete, name]
+      );
+      if (!rows[0]) return apiError(reply, "GEN_003", "Collection not found");
+      return { ok: true, collection: rows[0] };
+    }
 
     if (!newName) return reply.code(400).send({ error: "New name required", code: "GEN_002" });
     if (newName === name) return reply.code(400).send({ error: "New name must be different", code: "GEN_002" });
@@ -57,10 +73,10 @@ module.exports = async function (fastify) {
     schema: {
       body: {
         type: "object",
-        required: ["name"],
         additionalProperties: false,
         properties: {
-          name: { type: "string", minLength: 1, maxLength: 64 },
+          name:        { type: "string", minLength: 1, maxLength: 64 },
+          soft_delete: { type: "boolean" },
         },
       },
     },
