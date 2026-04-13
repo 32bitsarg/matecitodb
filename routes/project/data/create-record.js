@@ -8,6 +8,7 @@ const {
 
 const { emitProjectEvent } = require("../../../lib/realtime");
 const { fireWebhooks } = require("../../../lib/webhooks");
+const { invalidateFieldCache } = require("./list-records");
 
 const SAFE_KEY = /^[a-zA-Z_][a-zA-Z0-9_]{0,63}$/;
 
@@ -112,7 +113,56 @@ module.exports = async function (fastify) {
         fieldsMap.set(f.name, f);
       }
 
-      // ─── validar + castear data ─────────────
+      // ─── inferir tipo desde valor JS ──────────────────────────────────────
+      // Usado cuando el campo no existe en _fields todavía.
+
+      function inferType(value) {
+        if (value === null || value === undefined) return "text";
+        if (typeof value === "boolean")            return "bool";
+        if (typeof value === "number")             return "number";
+        if (typeof value === "object")             return "json";
+        if (typeof value === "string") {
+          if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return "email";
+          if (/^\d{4}-\d{2}-\d{2}(T[\d:.Z+-]+)?$/.test(value)) return "date";
+        }
+        return "text";
+      }
+
+      // ─── auto-create campos nuevos en _fields ─────────────────────────────
+      // Si el campo no existe en el schema lo inferimos y lo registramos.
+      // Los campos ya existentes se validan y castean normalmente.
+
+      const newFields = [];
+
+      for (const [key, value] of Object.entries(data)) {
+        if (!SAFE_KEY.test(key))    continue;
+        if (fieldsMap.has(key))     continue;
+
+        const type = inferType(value);
+        newFields.push({ name: key, type });
+      }
+
+      if (newFields.length > 0) {
+        // Insert en lote — ON CONFLICT DO NOTHING para requests concurrentes
+        const placeholders = newFields.map((_, i) => `($1, $${i * 2 + 2}, $${i * 2 + 3})`).join(", ");
+        const params = [collection];
+        for (const f of newFields) {
+          params.push(f.name, f.type);
+          fieldsMap.set(f.name, { name: f.name, type: f.type, required: false });
+        }
+
+        await db.query(
+          `INSERT INTO ${schema}._fields (collection, name, type)
+           VALUES ${placeholders}
+           ON CONFLICT (collection, name) DO NOTHING`,
+          params
+        );
+
+        // Invalida cache para que list-records vea los campos nuevos de inmediato
+        invalidateFieldCache(schema, collection);
+      }
+
+      // ─── validar + castear data ────────────────────────────────────────────
 
       const cleanData = {};
 
@@ -120,25 +170,23 @@ module.exports = async function (fastify) {
         if (!SAFE_KEY.test(key)) continue;
 
         const field = fieldsMap.get(key);
-
-        // campo no definido → ignorar (o podrías rechazar)
-        if (!field) continue;
+        if (!field) continue; // no debería pasar después del auto-create
 
         try {
           cleanData[key] = castValue(field.type, value);
         } catch (err) {
           return reply.code(400).send({
-            error: `Invalid value for field '${key}': ${err.message}`
+            error: `Invalid value for field '${key}': ${err.message}`,
           });
         }
       }
 
-      // ─── required fields ─────────────────────
+      // ─── required fields ──────────────────────────────────────────────────
 
       for (const field of fieldsRes.rows) {
         if (field.required && cleanData[field.name] == null) {
           return reply.code(400).send({
-            error: `Field '${field.name}' is required`
+            error: `Field '${field.name}' is required`,
           });
         }
       }
@@ -160,7 +208,8 @@ module.exports = async function (fastify) {
         [collection, cleanData, expiresAt]
       );
 
-      const record = result.rows[0];
+      const { data: rowData, ...rest } = result.rows[0];
+      const record = { ...rest, ...(rowData ?? {}) };
 
       // ─── realtime + webhooks ───────────────
 
@@ -168,7 +217,7 @@ module.exports = async function (fastify) {
         type: "record.created",
         projectId,
         collection,
-        record
+        record,
       });
 
       fireWebhooks(schemaName, collection, "record.created", { record }).catch(() => {});

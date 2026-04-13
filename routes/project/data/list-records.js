@@ -13,6 +13,12 @@ const SAFE_KEY = /^[a-zA-Z_][a-zA-Z0-9_]{0,63}$/;
 const fieldCache    = new Map();
 const FIELD_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
+function invalidateFieldCache(schema, collection) {
+  fieldCache.delete(`${schema}:${collection}`);
+}
+
+module.exports.invalidateFieldCache = invalidateFieldCache;
+
 async function getCollectionFields(schema, collection) {
   const key    = `${schema}:${collection}`;
   const cached = fieldCache.get(key);
@@ -319,4 +325,8 @@ module.exports = async function (fastify) {
     },
     handler
   );
+};
+
+module.exports.invalidateFieldCache = function (schema, collection) {
+  fieldCache.delete(`${schema}:${collection}`);
 };
