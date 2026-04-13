@@ -60,80 +60,68 @@ async function wsAuth(req, reply) {
 }
 
 module.exports = async function (fastify) {
-  const handler = (connection, req) => {
+  const handler = (socket, req) => {
     const project   = req.resolvedProject;
     const projectId = project?.id ?? req.params?.projectId;
 
     // Subscription state
-    connection.subscribedCollection = null;
-    connection.subscribeFilter       = null;
-    connection.subscribedUserId      = null; // for _notifications:{userId}
+    let subscribedCollection = null;
+    let subscribeFilter      = null;
+    let subscribedUserId     = null;
 
     const matchesFilter = (event) => {
-      // Notification subscription: match by userId
-      if (connection.subscribedUserId) {
-        return event.userId === connection.subscribedUserId || event.user_id === connection.subscribedUserId;
+      if (subscribedUserId) {
+        return event.userId === subscribedUserId || event.user_id === subscribedUserId;
       }
-
-      if (!connection.subscribedCollection) return true;
-      if (event.collection !== connection.subscribedCollection) return false;
-      if (!connection.subscribeFilter) return true;
-
-      // Check each filter key against event.record.data
+      if (!subscribedCollection) return true;
+      if (event.collection !== subscribedCollection) return false;
+      if (!subscribeFilter) return true;
       const data = event.record?.data ?? event.data ?? {};
-      for (const [key, val] of Object.entries(connection.subscribeFilter)) {
+      for (const [key, val] of Object.entries(subscribeFilter)) {
         if (String(data[key]) !== String(val)) return false;
       }
       return true;
     };
 
     const onFilteredEvent = (event) => {
-      if (connection.socket.readyState !== 1) return;
+      if (socket.readyState !== 1) return;
       if (!matchesFilter(event)) return;
-      connection.socket.send(JSON.stringify(event));
+      socket.send(JSON.stringify(event));
     };
 
     realtimeBus.on(`project:${projectId}`, onFilteredEvent);
 
-    connection.socket.on("message", (raw) => {
+    socket.on("message", (raw) => {
       let msg;
       try { msg = JSON.parse(raw.toString()); } catch { return; }
 
       if (msg.type === "ping") {
-        connection.socket.send(JSON.stringify({ type: "pong" }));
+        socket.send(JSON.stringify({ type: "pong" }));
       }
       if (msg.type === "subscribe") {
-        // Special case: subscribe to user notifications
         if (msg.collection === "_notifications" && msg.filter?.user_id) {
-          // Only allow subscribing to own notifications
           const authUserId = req.wsAuth?.kind === "project" ? req.wsAuth.userId : null;
           if (authUserId && msg.filter.user_id === authUserId) {
-            connection.subscribedUserId = msg.filter.user_id;
-            connection.subscribedCollection = "_notifications";
-            connection.socket.send(JSON.stringify({
-              type: "subscribed",
-              collection: "_notifications",
-              user_id: authUserId,
-            }));
+            subscribedUserId     = msg.filter.user_id;
+            subscribedCollection = "_notifications";
+            socket.send(JSON.stringify({ type: "subscribed", collection: "_notifications", user_id: authUserId }));
           } else {
-            connection.socket.send(JSON.stringify({ type: "error", message: "Can only subscribe to own notifications" }));
+            socket.send(JSON.stringify({ type: "error", message: "Can only subscribe to own notifications" }));
           }
           return;
         }
-
-        connection.subscribedCollection = msg.collection ?? null;
-        // filter: { field: value } — only emit events matching all conditions
-        connection.subscribeFilter = (msg.filter && typeof msg.filter === "object") ? msg.filter : null;
-        connection.socket.send(JSON.stringify({ type: "subscribed", collection: msg.collection, filter: connection.subscribeFilter }));
+        subscribedCollection = msg.collection ?? null;
+        subscribeFilter      = (msg.filter && typeof msg.filter === "object") ? msg.filter : null;
+        socket.send(JSON.stringify({ type: "subscribed", collection: msg.collection, filter: subscribeFilter }));
       }
       if (msg.type === "unsubscribe") {
-        connection.subscribedCollection = null;
-        connection.subscribeFilter       = null;
-        connection.subscribedUserId      = null;
+        subscribedCollection = null;
+        subscribeFilter      = null;
+        subscribedUserId     = null;
       }
     });
 
-    connection.socket.on("close", () => {
+    socket.on("close", () => {
       realtimeBus.off(`project:${projectId}`, onFilteredEvent);
     });
   };
