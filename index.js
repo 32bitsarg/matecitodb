@@ -397,6 +397,10 @@ fastify.register(require("@fastify/jwt"), {
 
 fastify.register(require("@fastify/websocket"));
 
+fastify.register(require("@fastify/multipart"), {
+  limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB
+});
+
 // ─── v1 routes ────────────────────────────────────────────────────────────────
 fastify.register(require("./routes/platform"), {
   prefix: "/api/v1/platform",
