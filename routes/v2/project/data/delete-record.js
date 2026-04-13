@@ -88,7 +88,7 @@ module.exports = async function (fastify) {
       enqueueAuditLog(schemaName, { action: "record.deleted", entity: col, entityId: id, prevValue: result.rows[0]?.data, performedBy: req.projectUser?.id, ip: req.ip });
       enqueueTrigger(schemaName, col, "record.deleted", result.rows[0]);
 
-      return { record: result.rows[0] };
+      return { ok: true, record: result.rows[0] };
     }
 
     // ── BULK DELETE ────────────────────────────────────────────────────────────
@@ -135,7 +135,7 @@ module.exports = async function (fastify) {
       enqueueTrigger(schemaName, collection, "record.deleted", row);
     }
 
-    return { count: rows.length, deleted: rows.map(r => r.id) };
+    return { ok: true, count: rows.length, deleted: rows.map(r => r.id) };
   };
 
   projectRoute(fastify, "DELETE", "/records/:id?", {
