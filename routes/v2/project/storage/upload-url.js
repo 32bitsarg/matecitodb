@@ -8,8 +8,8 @@ const {
 } = require("../../../../lib/v2/auth");
 const { apiError } = require("../../../../lib/v2/errors");
 
-const STORAGE_BASE    = process.env.STORAGE_PATH    || path.join(__dirname, "../../../../../storage");
-const PUBLIC_API_BASE = process.env.PUBLIC_API_BASE || "https://api.matecito.dev";
+const STORAGE_BASE = process.env.STORAGE_PATH || path.join(__dirname, "../../../../../storage");
+const DOMAIN       = process.env.DOMAIN       || "matecito.dev";
 
 async function checkStorageQuota(projectId, additionalBytes) {
   const { rows } = await db.query(
@@ -74,8 +74,19 @@ module.exports = async function (fastify) {
       [projectId, storagePath, "image/webp", stat.size, metadata.width || null, metadata.height || null]
     );
 
-    const fileId    = rows[0].id;
-    const publicUrl = `${PUBLIC_API_BASE}/api/v2/project/storage/files/${fileId}`;
+    const fileId = rows[0].id;
+
+    let subdomain = project?.subdomain;
+    if (!subdomain) {
+      const { rows: pRows } = await db.query(
+        `SELECT subdomain FROM projects WHERE id = $1 LIMIT 1`, [projectId]
+      );
+      subdomain = pRows[0]?.subdomain;
+    }
+
+    const publicUrl = subdomain
+      ? `https://${subdomain}.${DOMAIN}/storage/files/${fileId}`
+      : `https://api.${DOMAIN}/api/v2/project/storage/files/${fileId}`;
 
     await db.query(`UPDATE files SET url = $1 WHERE id = $2`, [publicUrl, fileId]);
 
