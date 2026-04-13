@@ -17,6 +17,10 @@ async function wsAuth(req, reply) {
   const rawKey = req.headers["x-matecito-key"] || req.query?.key;
   if (rawKey) {
     req.headers["x-matecito-key"] = rawKey;
+    // For subdomain routing, projectId is in resolvedProject, not params
+    if (!req.params.projectId && req.resolvedProject?.id) {
+      req.params.projectId = req.resolvedProject.id;
+    }
     return requireProjectApiKey(["anon", "service"])(req, reply);
   }
 
