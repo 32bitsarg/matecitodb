@@ -154,15 +154,77 @@ module.exports = async function (fastify) {
       const dropMatch   = /\bDROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?["']?(\w+)["']?/i.exec(sql);
       const renameMatch = /\bALTER\s+TABLE\s+["']?(\w+)["']?\s+RENAME\s+TO\s+["']?(\w+)["']?/i.exec(sql);
 
+      // Mapea tipos SQL a los tipos internos de MatecitoDB
+      function toMatecitoType(sqlType) {
+        const t = sqlType.toUpperCase();
+        if (/^(BOOL)/.test(t))                                          return "boolean";
+        if (/^(TIMESTAMPTZ|TIMESTAMP|DATE|TIME)/.test(t))              return "date";
+        if (/^(JSONB|JSON)/.test(t))                                    return "json";
+        if (/^(INT|BIGINT|SMALLINT|NUMERIC|DECIMAL|FLOAT|REAL|DOUBLE)/.test(t)) return "number";
+        return "text";
+      }
+
+      // Extrae columnas de un bloque CREATE TABLE (...)
+      // Devuelve [{ name, type, required }]
+      function parseColumns(ddl) {
+        const bodyMatch = /\(([^]*)\)/s.exec(ddl);
+        if (!bodyMatch) return [];
+
+        const body = bodyMatch[1];
+        const cols = [];
+
+        // Separar por comas respetando paréntesis anidados (e.g. CHECK(...))
+        const lines = [];
+        let depth = 0, cur = "";
+        for (const ch of body) {
+          if (ch === '(') { depth++; cur += ch; }
+          else if (ch === ')') { depth--; cur += ch; }
+          else if (ch === ',' && depth === 0) { lines.push(cur.trim()); cur = ""; }
+          else { cur += ch; }
+        }
+        if (cur.trim()) lines.push(cur.trim());
+
+        const CONSTRAINT_START = /^(CONSTRAINT|PRIMARY\s+KEY|FOREIGN\s+KEY|UNIQUE\s*\(|CHECK\s*\()/i;
+
+        for (const line of lines) {
+          if (!line || CONSTRAINT_START.test(line)) continue;
+
+          // nombre tipo [resto...]
+          const colMatch = /^["']?(\w+)["']?\s+(\w+)/i.exec(line);
+          if (!colMatch) continue;
+
+          const [, colName, rawType] = colMatch;
+          const required = /\bNOT\s+NULL\b/i.test(line);
+
+          cols.push({ name: colName, type: toMatecitoType(rawType), required });
+        }
+
+        return cols;
+      }
+
       try {
         if (createMatch) {
           const tbl = createMatch[1];
           if (!tbl.startsWith('_')) {
+            const s = quoteIdent(schemaName);
+
             await db.query(
-              `INSERT INTO ${quoteIdent(schemaName)}._collections (name) VALUES ($1) ON CONFLICT (name) DO NOTHING`,
+              `INSERT INTO ${s}._collections (name) VALUES ($1) ON CONFLICT (name) DO NOTHING`,
               [tbl]
             );
             console.log(`[SQL] auto-sync: INSERT collection "${tbl}"`);
+
+            // Sincronizar campos en _fields
+            const columns = parseColumns(sql);
+            for (const col of columns) {
+              await db.query(
+                `INSERT INTO ${s}._fields (collection, name, type, required)
+                 VALUES ($1, $2, $3, $4)
+                 ON CONFLICT DO NOTHING`,
+                [tbl, col.name, col.type, col.required]
+              );
+            }
+            console.log(`[SQL] auto-sync: ${columns.length} fields synced for "${tbl}"`);
           }
         } else if (dropMatch) {
           const tbl = dropMatch[1];
