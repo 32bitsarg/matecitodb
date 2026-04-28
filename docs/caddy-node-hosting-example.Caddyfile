@@ -1,0 +1,15 @@
+# Ejemplo mínimo de Caddy para convivir con Matebase API y el nuevo servicio de hosting.
+# Ajustar puertos, dominios y políticas según el VPS real.
+
+api.matecito.dev {
+    reverse_proxy 127.0.0.1:3001
+}
+
+*.apps.matecito.dev {
+    reverse_proxy 127.0.0.1:4100
+}
+
+# Si el panel del nuevo servicio vive en un subdominio propio:
+deploy.matecito.dev {
+    reverse_proxy 127.0.0.1:4100
+}
